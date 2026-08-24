@@ -1,12 +1,17 @@
 *.iml
-.gradle
-/local.properties
-/.idea
-.DS_Store
-/build
-/app/build
-/captures
-.externalNativeBuild
-.cxx
+.gradle/
+build/
 local.properties
-/app/libs/*.aar
+.idea/
+.DS_Store
+captures/
+.externalNativeBuild/
+.cxx/
+
+# ключи и секреты — НИКОГДА в репозиторий
+*.jks
+*.keystore
+keystore.properties
+
+# большие бинарники ядра
+app/libs/*.aar

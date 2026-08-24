@@ -28,9 +28,19 @@ android {
         versionName = "0.1.0"
     }
 
+    signingConfigs {
+        create("release") {
+            storeFile = file(System.getProperty("user.home") + "/ptunnel-release.jks")
+            storePassword = System.getenv("PTUNNEL_STORE_PASS") ?: ""
+            keyAlias = "ptunnel"
+            keyPassword = System.getenv("PTUNNEL_KEY_PASS") ?: ""
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
