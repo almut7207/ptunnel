@@ -65,6 +65,7 @@ class PtunnelVpnService : VpnService(), PlatformInterface {
         private const val NOTIF_ID = 1
         const val EXTRA_CONFIG = "config_blob"
         const val ACTION_STOPPED = "xyz.babyplatipus.ptunnel.STOPPED"
+        const val ACTION_STARTED = "xyz.babyplatipus.ptunnel.STARTED"
     }
 
     // -----------------------------------------------------------------
@@ -97,6 +98,7 @@ class PtunnelVpnService : VpnService(), PlatformInterface {
                     throw IllegalStateException("нет xray-кредов")
                 }
                 startSingBox(creds, excluded)
+                sendBroadcast(Intent(ACTION_STARTED).setPackage(packageName))
                 VpnStateHolder.setConnected()
             } catch (e: Exception) {
                 android.util.Log.e("ptunnel-box", "startTunnel failed", e)

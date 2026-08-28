@@ -40,7 +40,7 @@ object TunnelProbe {
         var lastIp: String? = null
 
         // ядру нужно время, чтобы поднять tun и перехватить маршруты
-        delay(2500)
+        delay(6000)
 
         repeat(10) { attempt ->
             if (attempt > 0) delay(3000)

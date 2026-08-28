@@ -20,6 +20,8 @@ import xyz.babyplatipus.ptunnel.data.model.Tariff
 import xyz.babyplatipus.ptunnel.data.remote.ApiClient
 import android.content.pm.PackageManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.withContext
 import xyz.babyplatipus.ptunnel.data.DefaultBypass
 import xyz.babyplatipus.ptunnel.data.model.AppEntry
@@ -202,13 +204,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Гасит любое активное ядро. Вызывать перед любым новым подключением. */
-    private suspend fun stopAllTunnels() {
+    /**
+     * Гасит ядро, которое сейчас мешает.
+     * @param keepSingbox true, если следом поднимаем armor — тогда процесс
+     *        :singbox не убиваем, он переиспользует ядро через reload.
+     *        Иначе интент ACTION_CONNECT прилетает в умирающий процесс и теряется.
+     */
+    private suspend fun stopAllTunnels(keepSingbox: Boolean = false) {
         withContext(Dispatchers.IO) {
             runCatching { AwgTunnel.stopAndWait(getApplication()) }
         }
-        _events.send(Event.StopVpnService)
-        delay(1200)
+        if (!keepSingbox) {
+            _events.send(Event.StopVpnService)
+            delay(1200)
+        }
     }
 
     fun dismissOfferImport() {
@@ -343,7 +352,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (old is Credentials.Awg) {
                 withContext(Dispatchers.IO) { runCatching { AwgTunnel.stop(getApplication()) } }
             }
-            _events.send(Event.StopVpnService)
+            stopAllTunnels(keepSingbox = creds is Credentials.Xray)
 
             prefs.saveCredentials(t.blob, t.tariff)
             pendingCredentials = creds
@@ -477,7 +486,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
         // Отдельная корутина: collect не завершается, поэтому её нельзя
         // класть в один блок с инициализацией
-        viewModelScope.launch {
+            viewModelScope.launch {
             var wasOffline = false
             NetworkWatcher.online.collect { online ->
                 _state.value = _state.value.copy(offline = !online)
@@ -488,7 +497,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     if (_state.value.connected || prefs.autoConnect()) {
                         android.util.Log.d("ptunnel", "сеть вернулась, переподключаемся")
                         reconnectLast()
-                    }
+                   }
                 }
             }
         }
@@ -578,7 +587,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     )
                     return@launch
                 }
-                stopAllTunnels()
+                stopAllTunnels(keepSingbox = tariff.code == "armor")
                 // 1. Дёргаем api — сервер генерит ключи и кладёт их
                 //    в базу под dev_<device_id>
                 mark(Stage.REQUESTING_API, StageLine.Status.RUNNING)
@@ -632,6 +641,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Резолвим домен ноды здесь: в :singbox сеть уже за туннелем. */
+
     /** Activity сообщает результат диалога VpnService.prepare. */
     /** Activity сообщает результат диалога VpnService.prepare. */
     /** Activity сообщает результат диалога VpnService.prepare. */
@@ -644,6 +655,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         mark(Stage.ASKING_PERMISSION, StageLine.Status.OK)
 
         viewModelScope.launch {
+            engineReady.tryReceive()
             val creds = pendingCredentials
 
             mark(Stage.CONNECTING, StageLine.Status.RUNNING)
@@ -673,6 +685,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             mark(Stage.ROUTING_TRAFFIC, StageLine.Status.OK)
 
             mark(Stage.VERIFYING, StageLine.Status.RUNNING)
+            if (creds is Credentials.Xray) {
+                withTimeoutOrNull(15_000) { engineReady.receive() }
+            }
 
             val exitIps = runCatching { ApiClient.exitIps() }.getOrDefault(emptySet())
             val probe = TunnelProbe.run(exitIps)
@@ -864,7 +879,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
 
-            stopAllTunnels()
+            stopAllTunnels(keepSingbox = creds is Credentials.Xray)
 
             val code = prefs.tariff() ?: "stainless"
             val tariff = if (code == "armor") Tariff.ARMOR else Tariff.STAINLESS
@@ -899,6 +914,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             _activeTunnelId.value = null
             _splitDirty.value = false
         }
+    }
+
+    val lowBalanceCount: StateFlow<Int> = _tunnels.map { list ->
+        list.count { it.minutesLeft in 0..4320 }
+    }.stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, 0)
+
+    private val engineStarted = kotlinx.coroutines.CompletableDeferred<Unit>()
+    private val engineReady = Channel<Unit>(Channel.CONFLATED)
+
+    fun onServiceStarted() {
+        engineReady.trySend(Unit)
     }
 
     fun consumeAutoConnect() {

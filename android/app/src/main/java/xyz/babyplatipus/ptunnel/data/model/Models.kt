@@ -62,6 +62,8 @@ sealed class Credentials {
         val flow: String,
         val fingerprint: String,
         val rawLink: String
+        /** IP ноды, отрезолвленный заранее в главном процессе.
+         *  Внутри :singbox резолвить нечем — резолвер за прокси. */
     ) : Credentials()
 }
 
@@ -95,8 +97,16 @@ data class TunnelInfo(
     val balanceMinutes: Int,
     val active: Boolean,
     val local: Boolean,
-    val tariff: String?
-)
+    val tariff: String?,
+    val fetchedAt: Long = System.currentTimeMillis()
+) {
+    /** Баланс с учётом времени, прошедшего с последнего запроса. */
+    val minutesLeft: Int
+        get() = if (balanceMinutes < 0) -1 else {
+            val spent = ((System.currentTimeMillis() - fetchedAt) / 60_000).toInt()
+            (balanceMinutes - spent).coerceAtLeast(0)
+        }
+}
 
 /** Состояние всего экрана подключения. */
 data class ConnectState(
@@ -146,3 +156,5 @@ data class ClientConfig(
     val s1: Int = 0, val s2: Int = 0,
     val h1: Long = 0, val h2: Long = 0, val h3: Long = 0, val h4: Long = 0
 )
+
+

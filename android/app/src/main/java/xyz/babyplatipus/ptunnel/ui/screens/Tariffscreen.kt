@@ -41,7 +41,8 @@ fun TariffScreen(
     onSelect: (Tariff) -> Unit,
     onReconnect: () -> Unit,
     onOpenTunnels: () -> Unit,
-    onOpenMenu: () -> Unit
+    onOpenMenu: () -> Unit,
+    lowBalance: Int
 ) {
     Column(
         modifier = Modifier
@@ -63,6 +64,32 @@ fun TariffScreen(
             fontSize = 14.sp,
             color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
         )
+
+        if (lowBalance > 0) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.error.copy(alpha = 0.15f))
+                    .clickable { onOpenTunnels() }
+                    .padding(12.dp)
+            ) {
+                Text(
+                    if (lowBalance == 1) "У одного туннеля заканчивается оплата"
+                    else "У $lowBalance туннелей заканчивается оплата",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.error
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Откройте «Мои туннели», чтобы продлить",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
+                )
+            }
+            Spacer(Modifier.height(16.dp))
+        }
 
         Spacer(Modifier.height(32.dp))
 

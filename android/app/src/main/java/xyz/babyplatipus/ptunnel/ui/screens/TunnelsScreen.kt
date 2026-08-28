@@ -141,18 +141,23 @@ private fun TunnelCard(
         )
 
         Spacer(Modifier.height(8.dp))
+        val left = tunnel.minutesLeft
+        val days = left / 1440
+        val hours = (left % 1440) / 60
+        val low = left in 0..4320
+
         Text(
             when {
-                tunnel.balanceMinutes < 0 -> "Баланс неизвестен"
-                tunnel.balanceMinutes > 0 -> "Осталось: $days д $hours ч"
-                else -> "Баланс исчерпан"
+                left < 0 -> "Баланс неизвестен"
+                left == 0 -> "Баланс исчерпан"
+                else -> "Осталось: $days д $hours ч"
             },
             fontSize = 13.sp,
+            fontWeight = if (low) FontWeight.Bold else FontWeight.Normal,
             color = when {
-                tunnel.balanceMinutes < 0 ->
-                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                tunnel.balanceMinutes > 0 -> MaterialTheme.colorScheme.onSurface
-                else -> MaterialTheme.colorScheme.error
+                left < 0 -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                low -> MaterialTheme.colorScheme.error
+                else -> MaterialTheme.colorScheme.onSurface
             }
         )
 
@@ -167,7 +172,11 @@ private fun TunnelCard(
                 OutlinedButton(onClick = onCopyConfig) { Text("Конфиг", fontSize = 12.sp) }
             }
             if (tunnel.balanceMinutes >= 0) {
-                OutlinedButton(onClick = onPay) { Text("Продлить", fontSize = 12.sp) }
+                if (low) {
+                    Button(onClick = onPay) { Text("Продлить", fontSize = 12.sp) }
+                } else {
+                    OutlinedButton(onClick = onPay) { Text("Продлить", fontSize = 12.sp) }
+                }
             }
         }
 

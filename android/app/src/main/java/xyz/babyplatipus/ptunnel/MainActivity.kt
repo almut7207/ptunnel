@@ -63,18 +63,37 @@ class MainActivity : ComponentActivity() {
     private var pendingConfig: String? = null
     private var pendingExcluded: List<String> = emptyList()
 
-    private val stoppedReceiver = object : android.content.BroadcastReceiver() {
+    /*private val stoppedReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(c: Context?, i: Intent?) {
             stopWaiter?.invoke()
             stopWaiter = null
         }
+    }*/
+
+    private var startWaiter: (() -> Unit)? = null
+
+    private val serviceReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                PtunnelVpnService.ACTION_STOPPED -> {
+                    stopWaiter?.invoke(); stopWaiter = null
+                }
+                PtunnelVpnService.ACTION_STARTED -> {
+                    vm.onServiceStarted()
+                }
+            }
+        }
     }
+
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         androidx.core.content.ContextCompat.registerReceiver(
-            this, stoppedReceiver,
-            android.content.IntentFilter(PtunnelVpnService.ACTION_STOPPED),
+            this, serviceReceiver,
+            IntentFilter().apply {
+                addAction(PtunnelVpnService.ACTION_STOPPED)
+                addAction(PtunnelVpnService.ACTION_STARTED)
+            },
             androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
         )
 
@@ -164,6 +183,7 @@ class MainActivity : ComponentActivity() {
                         val st by vm.state.collectAsState()
                         val activeId by vm.activeTunnelId.collectAsState()
                         val allTunnels by vm.tunnels.collectAsState()
+                        val lowBalance by vm.lowBalanceCount.collectAsState()
                         val hasOther = allTunnels.any {
                             it.local && it.id != activeId && it.balanceMinutes != 0
                         }
@@ -173,6 +193,7 @@ class MainActivity : ComponentActivity() {
                             connected = st.connected,
                             activeTariff = st.tariff?.title,
                             hasOtherLocal = hasOther,
+                            lowBalance = lowBalance,
                             onDisconnect = {
                                 stopVpnService()
                                 vm.disconnect()
@@ -326,7 +347,7 @@ class MainActivity : ComponentActivity() {
         }
     }
     override fun onDestroy() {
-        runCatching { unregisterReceiver(stoppedReceiver) }
+        runCatching { unregisterReceiver(serviceReceiver) }
         super.onDestroy()
     }
 }
