@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -24,6 +25,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import xyz.babyplatipus.ptunnel.data.model.Tariff
 import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.ui.graphics.Color
 
 /**
  * Первый экран приложения. Никакого логина — сразу выбор тарифа.
@@ -31,8 +34,13 @@ import androidx.compose.material3.Button
  */
 @Composable
 fun TariffScreen(
+    connected: Boolean,
+    activeTariff: String?,
+    hasOtherLocal: Boolean,
+    onDisconnect: () -> Unit,
     onSelect: (Tariff) -> Unit,
     onReconnect: () -> Unit,
+    onOpenTunnels: () -> Unit,
     onOpenMenu: () -> Unit
 ) {
     Column(
@@ -65,10 +73,39 @@ fun TariffScreen(
 
         Spacer(Modifier.height(8.dp))
 
-        Button(
-            onClick = onReconnect,
-            modifier = Modifier.fillMaxWidth()
-        ) { Text("Подключить последний") }
+        if (connected) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("●", color = Color(0xFF4CAF50), fontSize = 16.sp)
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "Подключено · ${activeTariff ?: ""}",
+                    fontSize = 14.sp,
+                    color = Color(0xFF4CAF50)
+                )
+            }
+            Spacer(Modifier.height(12.dp))
+
+            Button(
+                onClick = onOpenTunnels,
+                enabled = hasOtherLocal,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Подключить другой") }
+            Spacer(Modifier.height(8.dp))
+
+            OutlinedButton(
+                onClick = onDisconnect,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Отключиться") }
+        } else {
+            Button(
+                onClick = onReconnect,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Подключить последний") }
+        }
+
         Spacer(Modifier.height(8.dp))
 
         TextButton(onClick = onOpenMenu) {

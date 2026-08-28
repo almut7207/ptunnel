@@ -30,7 +30,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import xyz.babyplatipus.ptunnel.data.ConfigParsers
-import xyz.babyplatipus.ptunnel.data.Prefs
+//import xyz.babyplatipus.ptunnel.data.Prefs
 import xyz.babyplatipus.ptunnel.data.model.Credentials
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
@@ -53,6 +53,7 @@ import io.nekohasekai.libbox.NetworkInterface as LibboxNetworkInterface
 class PtunnelVpnService : VpnService(), PlatformInterface {
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    @Volatile
     private var commandServer: CommandServer? = null
     private var tunFd: ParcelFileDescriptor? = null
 
@@ -62,6 +63,8 @@ class PtunnelVpnService : VpnService(), PlatformInterface {
         const val EXTRA_EXCLUDED = "excluded_packages"
         private const val CHANNEL_ID = "ptunnel_vpn"
         private const val NOTIF_ID = 1
+        const val EXTRA_CONFIG = "config_blob"
+        const val ACTION_STOPPED = "xyz.babyplatipus.ptunnel.STOPPED"
     }
 
     // -----------------------------------------------------------------
@@ -75,20 +78,21 @@ class PtunnelVpnService : VpnService(), PlatformInterface {
                 return START_NOT_STICKY
             }
             else -> {
+                val blob = intent?.getStringExtra(EXTRA_CONFIG)
                 val excluded = intent?.getStringArrayListExtra(EXTRA_EXCLUDED) ?: arrayListOf()
-                startTunnel(excluded.toSet())
+                startTunnel(blob, excluded.toSet())
             }
         }
         return START_NOT_STICKY
     }
 
-    private fun startTunnel(excluded: Set<String>) {
+    private fun startTunnel(blob: String?, excluded: Set<String>) {
         startForegroundCompat()
         VpnStateHolder.setConnecting()
 
         scope.launch {
             try {
-                val creds = ConfigParsers.deserialize(Prefs(applicationContext).credentials())
+                val creds = ConfigParsers.deserialize(blob)
                 if (creds !is Credentials.Xray) {
                     throw IllegalStateException("нет xray-кредов")
                 }
@@ -104,7 +108,8 @@ class PtunnelVpnService : VpnService(), PlatformInterface {
 
     private fun startSingBox(creds: Credentials.Xray, excluded: Set<String>) {
         //val cfg = SingBoxConfig.build(creds, excluded)
-        val sets = xyz.babyplatipus.ptunnel.data.RuleSets.install(this)
+        //val sets = xyz.babyplatipus.ptunnel.data.RuleSets.install(this)
+        val sets = emptyList<String>()
         val dir = xyz.babyplatipus.ptunnel.data.RuleSets.dir(this).absolutePath
         val cfg = SingBoxConfig.build(creds, excluded, dir, sets)
         android.util.Log.d("ptunnel-box", "config: $cfg")
@@ -124,17 +129,18 @@ class PtunnelVpnService : VpnService(), PlatformInterface {
     }
 
     private fun stopTunnel() {
-        scope.launch {
-            runCatching { commandServer?.closeService() }
-            runCatching { tunFd?.close() }
-            tunFd = null
-            runCatching { commandServer?.close() }
-            commandServer = null
+        // Синхронно — иначе scope.cancel() в onDestroy оборвёт
+        // закрытие на полпути и оставит Go-объект в мёртвом состоянии
+        runCatching { commandServer?.closeService() }
+        runCatching { tunFd?.close() }
+        tunFd = null
+        runCatching { commandServer?.close() }
+        commandServer = null
 
-            VpnStateHolder.setDisconnected()
-            stopForegroundCompat()
-            stopSelf()
-        }
+        VpnStateHolder.setDisconnected()
+        stopForegroundCompat()
+        sendBroadcast(Intent(ACTION_STOPPED).setPackage(packageName))
+        stopSelf()
     }
 
     override fun onRevoke() {
@@ -142,7 +148,11 @@ class PtunnelVpnService : VpnService(), PlatformInterface {
     }
 
     override fun onDestroy() {
+        runCatching { commandServer?.closeService() }
+        runCatching { commandServer?.close() }
+        commandServer = null
         runCatching { tunFd?.close() }
+        tunFd = null
         scope.cancel()
         super.onDestroy()
     }

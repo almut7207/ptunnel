@@ -91,6 +91,13 @@ object ApiClient {
         return if (text.startsWith("vless://")) "xray" to text else "awg" to text
     }
 
+    /** Адреса зарубежных прокси-нод — ожидаемые exit-IP при рабочем туннеле. */
+    suspend fun exitIps(): Set<String> {
+        val json = get("/exit_ips")
+        val arr = json.optJSONArray("ips") ?: return emptySet()
+        return (0 until arr.length()).map { arr.getString(it) }.toSet()
+    }
+
     /** Опрос: привязался ли номер к TG-аккаунту. */
     suspend fun checkPhone(phone: String): Pair<String, String>? {
         if (useMock) return null

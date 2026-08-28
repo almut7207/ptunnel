@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -78,6 +79,20 @@ fun ConnectScreen(
 
         if (state.connected) {
             Spacer(Modifier.height(24.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("●", color = Color(0xFF4CAF50), fontSize = 18.sp)
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "Подключено · ${state.tariff?.title ?: ""}",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF4CAF50)
+                )
+            }
+            Spacer(Modifier.height(12.dp))
             ConnectionSummary(state.credentials)
             Spacer(Modifier.height(24.dp))
 

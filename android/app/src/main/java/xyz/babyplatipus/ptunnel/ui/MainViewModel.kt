@@ -29,6 +29,7 @@ import xyz.babyplatipus.ptunnel.data.TunnelStore
 import xyz.babyplatipus.ptunnel.data.LocalTunnel
 import xyz.babyplatipus.ptunnel.data.model.TunnelInfo
 import xyz.babyplatipus.ptunnel.data.ConfigImporter
+import kotlinx.coroutines.withTimeoutOrNull
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -57,6 +58,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val tunnels: StateFlow<List<TunnelInfo>> = _tunnels.asStateFlow()
 
     private val _tunnelsLoading = MutableStateFlow(false)
+
+    private val _tunnelsError = MutableStateFlow<String?>(null)
+    val tunnelsError: StateFlow<String?> = _tunnelsError.asStateFlow()
     val tunnelsLoading: StateFlow<Boolean> = _tunnelsLoading.asStateFlow()
 
     private val _importState = MutableStateFlow<ImportState?>(null)
@@ -64,6 +68,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _offerImport = MutableStateFlow(false)
     val offerImport: StateFlow<Boolean> = _offerImport.asStateFlow()
+
+    private val _activeTunnelId = MutableStateFlow<String?>(null)
+    val activeTunnelId: StateFlow<String?> = _activeTunnelId.asStateFlow()
 
     data class ImportState(
         val running: Boolean = false,
@@ -77,6 +84,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { _events.send(Event.PickFolder) }
     }
 
+    private fun idOf(creds: Credentials?): String? = when (creds) {
+        is Credentials.Awg -> creds.address.substringBefore("/")
+        is Credentials.Xray -> creds.uuid
+        else -> null
+    }
+
     /**
      * Туннель мог быть снесён биллингом при нулевом балансе:
      * awg-пир и xray-uuid удаляются с нод и из базы.
@@ -86,9 +99,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val username = prefs.username() ?: return true
         return runCatching {
             ApiClient.userTunnels(username).any { o ->
-                o.optString("full_key") == id || o.optString("ip") == id
+                val type = o.optString("type")
+                val remoteId = if (type.contains("ARMOR")) {
+                    o.optString("uuid").ifBlank { o.optString("ip") }
+                } else {
+                    o.optString("ip")
+                }.trim().substringBefore("/")
+                remoteId == id
             }
-        }.getOrDefault(true)   // при ошибке сети не удаляем ничего
+        }.getOrDefault(true)
     }
 
     /** Локальная зачистка мёртвого туннеля. */
@@ -180,6 +199,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Гасит любое активное ядро. Вызывать перед любым новым подключением. */
+    private suspend fun stopAllTunnels() {
+        withContext(Dispatchers.IO) {
+            runCatching { AwgTunnel.stopAndWait(getApplication()) }
+        }
+        _events.send(Event.StopVpnService)
+        delay(1200)
+    }
+
     fun dismissOfferImport() {
         viewModelScope.launch {
             prefs.markImportOffered()
@@ -202,35 +230,88 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun loadTunnels() {
+        android.util.Log.d("ptunnel", "loadTunnels()")
+        _tunnelsLoading.value = true
         viewModelScope.launch {
-            _tunnelsLoading.value = true
+            val local = store.all()
             try {
-                val username = prefs.username() ?: return@launch
-                val remote = ApiClient.userTunnels(username)
-                val local = store.all().associateBy { it.id }
+                val username = prefs.username()
+                if (username.isNullOrBlank()) {
+                    _tunnels.value = emptyList()
+                    _tunnelsError.value = "Нужно войти в аккаунт"
+                    return@launch
+                }
+                android.util.Log.d("ptunnel", "запрос туннелей для username=$username")
 
-                _tunnels.value = remote.mapNotNull { o ->
-                    val id = o.optString("full_key").takeIf { it.isNotBlank() }
-                        ?: o.optString("ip").takeIf { it.isNotBlank() }
-                        ?: return@mapNotNull null
+                val remote = withTimeoutOrNull(10_000) {
+                    ApiClient.userTunnels(username)
+                }
+
+                if (remote == null) {
+                    // Сервер не ответил — показываем то, что есть локально
+                    _tunnels.value = local.map { t -> t.toInfo() }
+                    _tunnelsError.value =
+                        "Сервер недоступен. Показаны туннели этого устройства, " +
+                                "остальные и балансы появятся позже."
+                    return@launch
+                }
+
+                val localById = local.associateBy { it.id }
+                android.util.Log.d("ptunnel", "local: ${localById.keys}")
+
+                val fromRemote = remote.mapNotNull { o ->
+                    val type = o.optString("type")
+                    // armor опознаётся по uuid, wg/awg — по адресу.
+                    // full_key для stainless — это публичный ключ, не идентификатор
+                    val id = if (type.contains("ARMOR")) {
+                        o.optString("uuid").ifBlank { o.optString("ip") }
+                    } else {
+                        o.optString("ip")
+                    }.trim().substringBefore("/")
+
+                    android.util.Log.d("ptunnel", "remote: type=$type id=$id")
+                    if (id.isBlank()) return@mapNotNull null
+
+                    val match = localById[id]
                     TunnelInfo(
                         id = id,
-                        type = o.optString("type"),
+                        type = type,
                         balanceMinutes = o.optInt("balance"),
                         active = o.optBoolean("active"),
-                        local = local.containsKey(id),
-                        tariff = local[id]?.tariff
+                        local = match != null,
+                        tariff = match?.tariff
                     )
                 }
+
+                // Локальные конфиги, которых сервер не вернул: туннель мог быть
+                // снесён биллингом, но креды на устройстве остались
+                val remoteIds = fromRemote.map { it.id }.toSet()
+                val orphans = local.filterNot { it.id in remoteIds }.map { t -> t.toInfo() }
+
+                _tunnels.value = fromRemote + orphans
+                _tunnelsError.value = null
             } catch (e: Exception) {
-                _state.value = _state.value.copy(
-                    error = e.message ?: "не удалось загрузить туннели"
-                )
+                _tunnels.value = local.map { t -> t.toInfo() }
+                _tunnelsError.value = e.message ?: "не удалось загрузить список"
             } finally {
                 _tunnelsLoading.value = false
             }
         }
     }
+
+    /** Локальный конфиг без данных с сервера. */
+    private fun LocalTunnel.toInfo() = TunnelInfo(
+        id = id,
+        type = when (tariff) {
+            "armor" -> "ARMOR (xray)"
+            "light" -> "LIGHT (WG)"
+            else -> "STAINLESS (AWG)"
+        },
+        balanceMinutes = -1,
+        active = false,
+        local = true,
+        tariff = tariff
+    )
 
     /** Переключиться на другой локальный туннель. */
     fun switchTo(id: String) {
@@ -259,7 +340,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             )
             mark(Stage.CONFIGURING_ENGINE, StageLine.Status.OK)
             mark(Stage.ASKING_PERMISSION, StageLine.Status.RUNNING)
-            _events.send(Event.RequestVpnPermission)
+            _events.send(Event.RequestVpnPermission(
+                configBlob = if (creds is Credentials.Xray)
+                    ConfigParsers.serialize(creds) else null,
+                excluded = prefs.splitExcluded().toList()
+            ))
         }
     }
 
@@ -327,7 +412,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** События для Activity: запросить VPN-разрешение, открыть Telegram. */
     sealed class Event {
-        object RequestVpnPermission : Event()
+        data class RequestVpnPermission(
+            val configBlob: String?,
+            val excluded: List<String>
+        ) : Event()
         object StopVpnService : Event()
         data class OpenTelegram(val deeplink: String) : Event()
         data class OpenUrl(val url: String) : Event()
@@ -389,7 +477,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             _loginWaiting.value = true
             _loginError.value = null
             _events.send(Event.OpenTelegram(
-                "tg://resolve?domain=PutInATunnel_bot&start=app$code"
+                "tg://resolve?domain=put_in_a_tunnel_bot&start=app$code"
             ))
             pollLogin(code)
         }
@@ -427,9 +515,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
         viewModelScope.launch {
             try {
-                if (prefs.tariff() == "stainless" || prefs.tariff() == "light") {
-                    withContext(Dispatchers.IO) { runCatching { AwgTunnel.stop(getApplication()) } }
-                }
+                stopAllTunnels()
                 // 1. Дёргаем api — сервер генерит ключи и кладёт их
                 //    в базу под dev_<device_id>
                 mark(Stage.REQUESTING_API, StageLine.Status.RUNNING)
@@ -465,7 +551,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
                 // 4. Разрешение на VPN — дальше продолжит Activity
                 mark(Stage.ASKING_PERMISSION, StageLine.Status.RUNNING)
-                _events.send(Event.RequestVpnPermission)
+                _events.send(Event.RequestVpnPermission(
+                    configBlob = if (creds is Credentials.Xray)
+                        ConfigParsers.serialize(creds) else null,
+                    excluded = prefs.splitExcluded().toList()
+                ))
 
             } catch (e: Exception) {
                 val failed = _state.value.lines.firstOrNull {
@@ -479,6 +569,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Activity сообщает результат диалога VpnService.prepare. */
     /** Activity сообщает результат диалога VpnService.prepare. */
     /** Activity сообщает результат диалога VpnService.prepare. */
     fun onVpnPermission(granted: Boolean) {
@@ -501,15 +592,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             mark(Stage.CONNECTING, StageLine.Status.OK)
 
             mark(Stage.ROUTING_TRAFFIC, StageLine.Status.RUNNING)
+            var awgUp = false
             if (creds is Credentials.Awg) {
-                val up = withContext(Dispatchers.IO) {
+                awgUp = withContext(Dispatchers.IO) {
                     repeat(20) {
                         if (AwgTunnel.isUp()) return@withContext true
                         delay(200)
                     }
                     AwgTunnel.isUp()
                 }
-                if (!up) {
+                if (!awgUp) {
                     mark(Stage.ROUTING_TRAFFIC, StageLine.Status.FAILED)
                     _state.value = _state.value.copy(error = "туннель не поднялся")
                     return@launch
@@ -518,35 +610,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             mark(Stage.ROUTING_TRAFFIC, StageLine.Status.OK)
 
             mark(Stage.VERIFYING, StageLine.Status.RUNNING)
-            val host = when (creds) {
-                is Credentials.Xray -> creds.host
-                is Credentials.Awg -> creds.endpointHost
-                else -> null
-            }
-            val port = when (creds) {
-                is Credentials.Xray -> creds.port
-                is Credentials.Awg -> creds.endpointPort
-                else -> 0
-            }
 
-            if (host == null) {
-                mark(Stage.VERIFYING, StageLine.Status.FAILED)
-                _state.value = _state.value.copy(error = "нет данных о сервере")
-                return@launch
-            }
+            val exitIps = runCatching { ApiClient.exitIps() }.getOrDefault(emptySet())
+            val probe = TunnelProbe.run(exitIps)
 
-            when (val probe = TunnelProbe.run(host, port)) {
+            when (probe) {
                 is TunnelProbe.Result.Ok -> {
                     mark(Stage.VERIFYING, StageLine.Status.OK)
                     _state.value = _state.value.copy(connected = true)
+                    _activeTunnelId.value = idOf(creds)
                     if (!prefs.isTelegramLinked()) {
                         _state.value = _state.value.copy(showTelegramPrompt = true)
                     }
                     maybeSuggestBypass()
                 }
+
                 is TunnelProbe.Result.ServerUnreachable,
                 is TunnelProbe.Result.Blocked -> {
                     mark(Stage.VERIFYING, StageLine.Status.FAILED)
+                    _activeTunnelId.value = null
 
                     val id = when (creds) {
                         is Credentials.Awg -> creds.address.substringBefore("/")
@@ -563,13 +645,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         )
                     } else if (probe is TunnelProbe.Result.ServerUnreachable) {
                         _state.value = _state.value.copy(
-                            error = "Сервер не отвечает. Возможно, нода перегружена — " +
+                            error = "Нет связи с сервером. Проверьте интернет или " +
                                     "попробуйте создать новый туннель."
                         )
                     } else {
                         _state.value = _state.value.copy(
-                            error = "Туннель поднялся, но трафик не проходит. " +
-                                    "Похоже, соединение блокируется. " +
+                            error = "Туннель поднялся, но трафик идёт мимо него. " +
                                     (if (creds is Credentials.Awg)
                                         "Попробуйте тариф ARMOR — он устойчивее к блокировкам."
                                     else "Попробуйте пересоздать туннель.")
@@ -577,8 +658,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     stopEverything()
                 }
+
                 is TunnelProbe.Result.Failed -> {
                     mark(Stage.VERIFYING, StageLine.Status.FAILED)
+                    _activeTunnelId.value = null
                     _state.value = _state.value.copy(error = probe.message)
                     stopEverything()
                 }
@@ -596,7 +679,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val phone = prefs.phone() ?: return@launch
             _events.send(Event.OpenTelegram(
-                "tg://resolve?domain=PutInATunnel_bot&start=ph$phone"
+                "tg://resolve?domain=put_in_a_tunnel_bot&start=ph$phone"
             ))
             pollLink(phone)
         }
@@ -660,6 +743,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Поднять последний сохранённый туннель без обращения к серверу. */
+    /** Поднять последний сохранённый туннель без обращения к серверу. */
     fun reconnectLast() {
         viewModelScope.launch {
             val creds = ConfigParsers.deserialize(prefs.credentials())
@@ -667,6 +751,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 _state.value = _state.value.copy(error = "нет сохранённого туннеля")
                 return@launch
             }
+
+            // Проверяем ДО попытки: туннель мог быть снесён биллингом,
+            // тогда незачем ждать таймаутов подключения
+            val id = when (creds) {
+                is Credentials.Awg -> creds.address.substringBefore("/")
+                is Credentials.Xray -> creds.uuid
+                else -> null
+            }
+            if (id != null && !tunnelStillExists(id)) {
+                dropLocalTunnel(id)
+                _state.value = _state.value.copy(
+                    error = "Этот туннель удалён — закончилось оплаченное время. " +
+                            "Создайте новый на экране тарифов."
+                )
+                return@launch
+            }
+
+            stopAllTunnels()
+
             val code = prefs.tariff() ?: "stainless"
             val tariff = if (code == "armor") Tariff.ARMOR else Tariff.STAINLESS
 
@@ -681,7 +784,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             )
             mark(Stage.CONFIGURING_ENGINE, StageLine.Status.OK)
             mark(Stage.ASKING_PERMISSION, StageLine.Status.RUNNING)
-            _events.send(Event.RequestVpnPermission)
+
+            _events.send(Event.RequestVpnPermission(
+                configBlob = if (creds is Credentials.Xray)
+                    ConfigParsers.serialize(creds) else null,
+                excluded = prefs.splitExcluded().toList()
+            ))
         }
     }
 
@@ -690,13 +798,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun disconnect() {
         viewModelScope.launch {
-            val creds = pendingCredentials
-            if (creds is Credentials.Awg) {
-                withContext(Dispatchers.IO) {
-                    runCatching { AwgTunnel.stop(getApplication()) }
-                }
-            }
+            stopAllTunnels()
             _state.value = _state.value.copy(connected = false, lines = emptyList())
+            _activeTunnelId.value = null
         }
     }
 

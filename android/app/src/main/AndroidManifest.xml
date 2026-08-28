@@ -33,6 +33,7 @@
             android:name=".vpn.PtunnelVpnService"
             android:permission="android.permission.BIND_VPN_SERVICE"
             android:foregroundServiceType="specialUse"
+            android:process=":singbox"
             android:exported="false">
             <intent-filter>
                 <action android:name="android.net.VpnService" />

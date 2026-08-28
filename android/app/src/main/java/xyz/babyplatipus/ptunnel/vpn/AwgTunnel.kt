@@ -76,6 +76,18 @@ object AwgTunnel {
         return out.toString()
     }
 
+    suspend fun stopAndWait(context: Context) {
+        if (backend == null) return
+        runCatching {
+            backend(context).setState(tunnel, Tunnel.State.DOWN, null)
+        }
+        // ждём, пока состояние реально станет DOWN
+        repeat(30) {
+            if (state == Tunnel.State.DOWN) return
+            kotlinx.coroutines.delay(100)
+        }
+    }
+
     fun stop(context: Context) {
         runCatching {
             backend(context).setState(tunnel, Tunnel.State.DOWN, null)

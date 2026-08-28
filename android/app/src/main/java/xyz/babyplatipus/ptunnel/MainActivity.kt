@@ -32,6 +32,9 @@ import xyz.babyplatipus.ptunnel.ui.screens.ImportDialog
 import xyz.babyplatipus.ptunnel.ui.screens.OfferImportDialog
 import xyz.babyplatipus.ptunnel.ui.screens.LoginScreen
 import xyz.babyplatipus.ptunnel.ui.screens.MenuScreen
+import android.content.Context
+import android.content.BroadcastReceiver
+import android.content.IntentFilter
 
 class MainActivity : ComponentActivity() {
 
@@ -41,7 +44,7 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         val granted = result.resultCode == RESULT_OK
-        if (granted) startVpnService()
+        if (granted) startVpnService(pendingConfig, pendingExcluded)
         vm.onVpnPermission(granted)
     }
 
@@ -56,14 +59,34 @@ class MainActivity : ComponentActivity() {
         vm.onFolderPicked(uri)
     }
 
+    private var stopWaiter: (() -> Unit)? = null
+    private var pendingConfig: String? = null
+    private var pendingExcluded: List<String> = emptyList()
+
+    private val stoppedReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(c: Context?, i: Intent?) {
+            stopWaiter?.invoke()
+            stopWaiter = null
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        androidx.core.content.ContextCompat.registerReceiver(
+            this, stoppedReceiver,
+            android.content.IntentFilter(PtunnelVpnService.ACTION_STOPPED),
+            androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
+        )
 
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 vm.events.collect { event ->
                     when (event) {
-                        is MainViewModel.Event.RequestVpnPermission -> requestVpn()
+                        is MainViewModel.Event.RequestVpnPermission -> {
+                            pendingConfig = event.configBlob
+                            pendingExcluded = event.excluded
+                            requestVpn()
+                        }
                         is MainViewModel.Event.OpenTelegram -> openTelegram(event.deeplink)
                         is MainViewModel.Event.StopVpnService -> stopVpnService()
                         is MainViewModel.Event.OpenUrl ->
@@ -137,26 +160,48 @@ class MainActivity : ComponentActivity() {
                 }
 
                 when (screen) {
-                    Screen.TARIFF -> TariffScreen(
-                        onSelect = {
-                            vm.onTariffSelected(it)
-                            screen = Screen.CONNECT
-                        },
-                        onReconnect = {
-                            vm.reconnectLast()
-                            screen = Screen.CONNECT
-                        },
-                        onOpenMenu = { screen = Screen.MENU }
-                    )
+                    Screen.TARIFF -> {
+                        val st by vm.state.collectAsState()
+                        val activeId by vm.activeTunnelId.collectAsState()
+                        val allTunnels by vm.tunnels.collectAsState()
+                        val hasOther = allTunnels.any {
+                            it.local && it.id != activeId && it.balanceMinutes != 0
+                        }
+                        LaunchedEffect(Unit) { vm.loadTunnels() }
+
+                        TariffScreen(
+                            connected = st.connected,
+                            activeTariff = st.tariff?.title,
+                            hasOtherLocal = hasOther,
+                            onDisconnect = {
+                                stopVpnService()
+                                vm.disconnect()
+                            },
+                            onSelect = {
+                                vm.onTariffSelected(it)
+                                screen = Screen.CONNECT
+                            },
+                            onReconnect = {
+                                vm.reconnectLast()
+                                screen = Screen.CONNECT
+                            },
+                            onOpenTunnels = { screen = Screen.TUNNELS },
+                            onOpenMenu = { screen = Screen.MENU }
+                        )
+                    }
 
                     Screen.TUNNELS -> {
                         val tunnels by vm.tunnels.collectAsState()
                         val loading by vm.tunnelsLoading.collectAsState()
+                        val tunnelsError by vm.tunnelsError.collectAsState()
+                        val activeId by vm.activeTunnelId.collectAsState()
                         LaunchedEffect(Unit) { vm.loadTunnels() }
+
                         TunnelsScreen(
                             tunnels = tunnels,
                             loading = loading,
-                            currentId = null,
+                            error = tunnelsError,
+                            currentId = activeId,
                             onConnect = {
                                 vm.switchTo(it)
                                 screen = Screen.CONNECT
@@ -174,6 +219,7 @@ class MainActivity : ComponentActivity() {
                             onPay = { vm.startPayment(it) },
                             onBack = { screen = Screen.TARIFF }
                         )
+
                         val payment by vm.payment.collectAsState()
                         payment?.let {
                             PaymentDialog(
@@ -232,16 +278,22 @@ class MainActivity : ComponentActivity() {
         if (intent != null) {
             vpnPermission.launch(intent)
         } else {
-            // Разрешение уже выдано раньше
-            startVpnService()
+            // разрешение уже выдано раньше
+            startVpnService(pendingConfig, pendingExcluded)
             vm.onVpnPermission(true)
         }
     }
 
-    private fun startVpnService() {
-        startService(
+    private fun startVpnService(configBlob: String?, excluded: List<String>) {
+        if (configBlob == null) return   // stainless — его поднимает AwgTunnel
+        androidx.core.content.ContextCompat.startForegroundService(
+            this,
             Intent(this, PtunnelVpnService::class.java)
                 .setAction(PtunnelVpnService.ACTION_CONNECT)
+                .putExtra(PtunnelVpnService.EXTRA_CONFIG, configBlob)
+                .putStringArrayListExtra(
+                    PtunnelVpnService.EXTRA_EXCLUDED, ArrayList(excluded)
+                )
         )
     }
 
@@ -266,5 +318,9 @@ class MainActivity : ComponentActivity() {
                 .replace("&start=", "?start=")
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(web)))
         }
+    }
+    override fun onDestroy() {
+        runCatching { unregisterReceiver(stoppedReceiver) }
+        super.onDestroy()
     }
 }
