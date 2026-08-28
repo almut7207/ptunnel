@@ -25,8 +25,18 @@ object DefaultNetworkMonitor {
         update(manager.activeNetwork)
 
         val cb = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) = update(network)
-            override fun onLost(network: Network) = update(manager.activeNetwork)
+            override fun onAvailable(network: Network) {
+                update(network)
+            }
+            override fun onLost(network: Network) {
+                update(manager.activeNetwork)
+            }
+            override fun onCapabilitiesChanged(
+                network: Network,
+                caps: android.net.NetworkCapabilities
+            ) {
+                update(network)
+            }
         }
         callback = cb
         runCatching { manager.registerDefaultNetworkCallback(cb) }
@@ -42,20 +52,18 @@ object DefaultNetworkMonitor {
     private fun update(network: Network?) {
         val l = listener ?: return
         if (network == null) {
-            l.updateDefaultInterface("", -1, false, false)
+            android.util.Log.d("ptunnel-box", "сеть пропала")
+            runCatching { l.updateDefaultInterface("", -1, false, false) }
             return
         }
         repeat(10) {
             val lp = cm?.getLinkProperties(network)
             val name = lp?.interfaceName
-            // tun0 — наш собственный интерфейс, наружу через него ходить нельзя
             if (name != null && !name.startsWith("tun")) {
-                val idx = runCatching {
-                    NetworkInterface.getByName(name).index
-                }.getOrNull()
+                val idx = runCatching { NetworkInterface.getByName(name)?.index }.getOrNull()
                 if (idx != null) {
-                    android.util.Log.d("ptunnel-box", "default interface: $name idx=$idx")
-                    l.updateDefaultInterface(name, idx, false, false)
+                    android.util.Log.d("ptunnel-box", "интерфейс: $name idx=$idx")
+                    runCatching { l.updateDefaultInterface(name, idx, false, false) }
                     return
                 }
             }

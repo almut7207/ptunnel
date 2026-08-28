@@ -248,9 +248,15 @@ class MainActivity : ComponentActivity() {
 
                     Screen.SPLIT -> {
                         val apps by vm.apps.collectAsState()
+                        val dirty by vm.splitDirty.collectAsState()
                         SplitScreen(
                             apps = apps,
+                            dirty = dirty,
                             onToggle = { pkg, excluded -> vm.onSplitToggle(pkg, excluded) },
+                            onApply = {
+                                vm.applySplitChanges()
+                                screen = Screen.CONNECT
+                            },
                             onBack = { screen = Screen.TARIFF }
                         )
                     }

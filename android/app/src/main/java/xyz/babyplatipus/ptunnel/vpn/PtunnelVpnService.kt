@@ -107,9 +107,7 @@ class PtunnelVpnService : VpnService(), PlatformInterface {
     }
 
     private fun startSingBox(creds: Credentials.Xray, excluded: Set<String>) {
-        //val cfg = SingBoxConfig.build(creds, excluded)
-        //val sets = xyz.babyplatipus.ptunnel.data.RuleSets.install(this)
-        val sets = emptyList<String>()
+        val sets = xyz.babyplatipus.ptunnel.data.RuleSets.install(this)
         val dir = xyz.babyplatipus.ptunnel.data.RuleSets.dir(this).absolutePath
         val cfg = SingBoxConfig.build(creds, excluded, dir, sets)
         android.util.Log.d("ptunnel-box", "config: $cfg")

@@ -106,6 +106,7 @@ data class ConnectState(
     val connected: Boolean = false,
     val error: String? = null,
     val showTelegramPrompt: Boolean = false,
+    val offline: Boolean = false,
     val telegramDeeplink: String? = null
 )
 

@@ -30,6 +30,7 @@ import xyz.babyplatipus.ptunnel.data.LocalTunnel
 import xyz.babyplatipus.ptunnel.data.model.TunnelInfo
 import xyz.babyplatipus.ptunnel.data.ConfigImporter
 import kotlinx.coroutines.withTimeoutOrNull
+import xyz.babyplatipus.ptunnel.vpn.NetworkWatcher
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -39,6 +40,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _state = MutableStateFlow(ConnectState())
     val state: StateFlow<ConnectState> = _state.asStateFlow()
     private val _apps = MutableStateFlow<List<AppEntry>>(emptyList())
+    private val _splitDirty = MutableStateFlow(false)
+    val splitDirty: StateFlow<Boolean> = _splitDirty.asStateFlow()
     val apps: StateFlow<List<AppEntry>> = _apps.asStateFlow()
     private val _needPhone = MutableStateFlow(false)
     val needPhone: StateFlow<Boolean> = _needPhone.asStateFlow()
@@ -313,9 +316,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         tariff = tariff
     )
 
+    /** Поднят ли VPN прямо сейчас — переживает пересоздание ViewModel. */
+    private fun vpnIsUp(): Boolean {
+        val cm = getApplication<Application>()
+            .getSystemService(android.net.ConnectivityManager::class.java)
+        return cm.allNetworks.any { n ->
+            cm.getNetworkCapabilities(n)
+                ?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true
+        }
+    }
+
     /** Переключиться на другой локальный туннель. */
     fun switchTo(id: String) {
         viewModelScope.launch {
+            if (!hasNetwork()) {
+                _state.value = _state.value.copy(
+                    error = "Нет подключения к интернету. Проверьте wi-fi или мобильную сеть."
+                )
+                return@launch
+            }
             val t = store.byId(id) ?: return@launch
             val creds = ConfigParsers.deserialize(t.blob) ?: return@launch
 
@@ -431,17 +450,46 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         viewModelScope.launch {
+            NetworkWatcher.start(getApplication())
             ApiClient.refreshEndpoints()
-            // Уже подключались раньше — восстановим креды, чтобы
-            // не дёргать api заново.
+
             ConfigParsers.deserialize(prefs.credentials())?.let {
                 pendingCredentials = it
             }
-	        loadApps()
+            loadApps()
             _needLogin.value = prefs.needLogin()
-            if (prefs.autoConnect() && prefs.credentials() != null
-                && !prefs.phone().isNullOrBlank()) {
+
+            if (vpnIsUp()) {
+                val code = prefs.tariff() ?: "stainless"
+                _state.value = _state.value.copy(
+                    connected = true,
+                    tariff = if (code == "armor") Tariff.ARMOR else Tariff.STAINLESS,
+                    credentials = pendingCredentials
+                )
+                _activeTunnelId.value = idOf(pendingCredentials)
+            } else if (prefs.autoConnect()
+                && prefs.credentials() != null
+                && !prefs.needLogin()
+            ) {
                 _autoConnectReady.value = true
+            }
+        }
+
+        // Отдельная корутина: collect не завершается, поэтому её нельзя
+        // класть в один блок с инициализацией
+        viewModelScope.launch {
+            var wasOffline = false
+            NetworkWatcher.online.collect { online ->
+                _state.value = _state.value.copy(offline = !online)
+                if (!online) {
+                    wasOffline = true
+                } else if (wasOffline) {
+                    wasOffline = false
+                    if (_state.value.connected || prefs.autoConnect()) {
+                        android.util.Log.d("ptunnel", "сеть вернулась, переподключаемся")
+                        reconnectLast()
+                    }
+                }
             }
         }
     }
@@ -468,6 +516,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun switchToPhone() {
         _needPhone.value = true
         _needLogin.value = false
+    }
+
+    private fun hasNetwork(): Boolean {
+        val cm = getApplication<Application>()
+            .getSystemService(android.net.ConnectivityManager::class.java)
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        return caps.hasCapability(
+            android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET
+        )
     }
 
     /** Вход через Telegram: генерим код и открываем бота. */
@@ -515,6 +572,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
         viewModelScope.launch {
             try {
+                if (!hasNetwork()) {
+                    _state.value = _state.value.copy(
+                        error = "Нет подключения к интернету. Проверьте wi-fi или мобильную сеть."
+                    )
+                    return@launch
+                }
                 stopAllTunnels()
                 // 1. Дёргаем api — сервер генерит ключи и кладёт их
                 //    в базу под dev_<device_id>
@@ -714,10 +777,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun loadApps() {
         val excluded = prefs.splitExcluded()
-        val pm = getApplication<Application>().packageManager
+        val app = getApplication<Application>()
+        val pm = app.packageManager
+
         val list = withContext(Dispatchers.IO) {
-            pm.getInstalledApplications(PackageManager.GET_META_DATA)
-                .filter { it.packageName != getApplication<Application>().packageName }
+            val launchable = pm.queryIntentActivities(
+                android.content.Intent(android.content.Intent.ACTION_MAIN)
+                    .addCategory(android.content.Intent.CATEGORY_LAUNCHER),
+                0
+            ).map { it.activityInfo.applicationInfo }
+                .distinctBy { it.packageName }
+
+            launchable
+                .filter { it.packageName != app.packageName }
+                .filter {
+                    // системные показываем только если пользователь их обновлял
+                    val isSystem = (it.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
+                    val isUpdated = (it.flags and
+                            android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+                    !isSystem || isUpdated
+                }
                 .map {
                     AppEntry(
                         packageName = it.packageName,
@@ -739,13 +818,30 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             _apps.value = _apps.value.map {
                 if (it.packageName == packageName) it.copy(excluded = excluded) else it
             }
+            if (_state.value.connected) _splitDirty.value = true
         }
+    }
+
+    /** Перезапустить туннель, чтобы новый список исключений вступил в силу. */
+    fun applySplitChanges() {
+        _splitDirty.value = false
+        reconnectLast()
+    }
+
+    fun dismissSplitChanges() {
+        _splitDirty.value = false
     }
 
     /** Поднять последний сохранённый туннель без обращения к серверу. */
     /** Поднять последний сохранённый туннель без обращения к серверу. */
     fun reconnectLast() {
         viewModelScope.launch {
+            if (!hasNetwork()) {
+                _state.value = _state.value.copy(
+                    error = "Нет подключения к интернету. Проверьте wi-fi или мобильную сеть."
+                )
+                return@launch
+            }
             val creds = ConfigParsers.deserialize(prefs.credentials())
             if (creds == null) {
                 _state.value = _state.value.copy(error = "нет сохранённого туннеля")
@@ -801,6 +897,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             stopAllTunnels()
             _state.value = _state.value.copy(connected = false, lines = emptyList())
             _activeTunnelId.value = null
+            _splitDirty.value = false
         }
     }
 

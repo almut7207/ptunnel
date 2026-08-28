@@ -42,8 +42,8 @@ fun ConnectScreen(
     onLinkTelegram: () -> Unit,
     onDismissPrompt: () -> Unit,
     onDisconnect: () -> Unit,
-    onBack: () -> Unit,
-    onOpenMenu: () -> Unit
+    onOpenMenu: () -> Unit,
+    onBack: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -52,6 +52,15 @@ fun ConnectScreen(
             .padding(24.dp)
     ) {
         Spacer(Modifier.height(24.dp))
+
+        if (state.offline) {
+            Text(
+                text = "Нет подключения к интернету. Туннель восстановится автоматически.",
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.error
+            )
+            Spacer(Modifier.height(12.dp))
+        }
 
         Text(
             text = state.tariff?.title ?: "Подключение",
