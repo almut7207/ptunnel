@@ -89,6 +89,42 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { _events.send(Event.PickFolder) }
     }
 
+    /** Импорт через выбор файлов — проще, чем выбор папки, и работает в Download. */
+    fun beginImportFiles() {
+        _importState.value = ImportState()
+        viewModelScope.launch { _events.send(Event.PickFiles) }
+    }
+
+    fun onFilesPicked(uris: List<android.net.Uri>) {
+        if (uris.isEmpty()) {
+            _importState.value = null
+            return
+        }
+        viewModelScope.launch {
+            _importState.value = ImportState(running = true)
+            try {
+                val username = prefs.username() ?: throw IllegalStateException("нет аккаунта")
+                val remote = ApiClient.userTunnels(username)
+                val ids = remote.mapNotNull { o ->
+                    val type = o.optString("type")
+                    if (type.contains("ARMOR")) {
+                        o.optString("uuid").ifBlank { o.optString("ip") }
+                    } else {
+                        o.optString("ip")
+                    }.trim().substringBefore("/").takeIf { it.isNotBlank() }
+                }.toSet()
+
+                android.util.Log.d("ptunnel", "импорт: ищем среди $ids")
+
+                val res = ConfigImporter.importFiles(getApplication(), uris, ids, store)
+                _importState.value = ImportState(result = res)
+                loadTunnels()
+            } catch (e: Exception) {
+                _importState.value = ImportState(error = e.message ?: "ошибка импорта")
+            }
+        }
+    }
+
     private fun idOf(creds: Credentials?): String? = when (creds) {
         is Credentials.Awg -> creds.address.substringBefore("/")
         is Credentials.Xray -> creds.uuid
@@ -448,6 +484,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         data class OpenTelegram(val deeplink: String) : Event()
         data class OpenUrl(val url: String) : Event()
         object PickFolder : Event()
+        object PickFiles : Event()
     }
 
     private val _events = Channel<Event>(Channel.BUFFERED)

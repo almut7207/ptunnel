@@ -82,6 +82,48 @@ object ConfigImporter {
         Result(imported, scanned, skipped)
     }
 
+    /**
+     * Импорт файлов, выбранных пользователем вручную через файловый пикер.
+     * В отличие от scanFolder, не требует доступа к папке — Android даёт
+     * права на конкретные файлы.
+     */
+    suspend fun importFiles(
+        context: Context,
+        uris: List<Uri>,
+        knownIds: Set<String>,
+        store: TunnelStore
+    ): Result = withContext(Dispatchers.IO) {
+        var imported = 0
+        val skipped = mutableListOf<String>()
+
+        for (uri in uris) {
+            val text = runCatching {
+                context.contentResolver.openInputStream(uri)
+                    ?.bufferedReader()?.use { it.readText() }
+            }.getOrNull() ?: continue
+
+            val creds = runCatching { ConfigParsers.parseAwg(text) }.getOrNull()
+            if (creds == null || creds.privateKey.isBlank()) {
+                skipped.add(uri.lastPathSegment ?: "?")
+                continue
+            }
+
+            val ip = creds.address.substringBefore("/")
+            if (ip.isNotBlank() && ip in knownIds) {
+                store.save(LocalTunnel(
+                    id = ip,
+                    tariff = if (creds.jc > 0) "stainless" else "light",
+                    blob = ConfigParsers.serialize(creds),
+                    createdAt = System.currentTimeMillis()
+                ))
+                imported++
+            } else {
+                skipped.add(uri.lastPathSegment ?: ip)
+            }
+        }
+        Result(imported, uris.size, skipped)
+    }
+
     /** Импорт vless-ссылки из буфера — для armor. */
     suspend fun importVless(
         link: String,

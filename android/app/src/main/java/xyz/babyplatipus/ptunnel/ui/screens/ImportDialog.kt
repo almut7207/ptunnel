@@ -39,8 +39,8 @@ fun ImportDialog(
                             Spacer(Modifier.height(8.dp))
                             Text(
                                 "Ни один конфиг не совпал с вашими туннелями. " +
-                                        "Возможно, файлы лежат в другой папке — " +
-                                        "попробуйте «Загрузки».",
+                                        "Конфиги от Telegram обычно лежат в папке " +
+                                        "«Download» или «Download/Telegram».",
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                             )

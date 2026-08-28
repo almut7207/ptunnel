@@ -59,6 +59,12 @@ class MainActivity : ComponentActivity() {
         vm.onFolderPicked(uri)
     }
 
+    private val filesPicker = registerForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        vm.onFilesPicked(uris)
+    }
+
     private var stopWaiter: (() -> Unit)? = null
     private var pendingConfig: String? = null
     private var pendingExcluded: List<String> = emptyList()
@@ -108,6 +114,9 @@ class MainActivity : ComponentActivity() {
                         }
                         is MainViewModel.Event.OpenTelegram -> openTelegram(event.deeplink)
                         is MainViewModel.Event.StopVpnService -> stopVpnService()
+                        is MainViewModel.Event.PickFiles -> {
+                            filesPicker.launch(arrayOf("*/*"))
+                        }
                         is MainViewModel.Event.OpenUrl ->
                             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(event.url)))
                         is MainViewModel.Event.PickFolder -> {
@@ -117,6 +126,7 @@ class MainActivity : ComponentActivity() {
                                         "primary%3ADownload%2FTelegram"
                             )
                             folderPicker.launch(hint)
+
                         }
                     }
                 }
@@ -286,7 +296,7 @@ class MainActivity : ComponentActivity() {
                         linked = false,
                         onTunnels = { screen = Screen.TUNNELS },
                         onSplit = { screen = Screen.SPLIT },
-                        onImport = { vm.beginImport() },
+                        onImport = { vm.beginImportFiles() },
                         onLinkTelegram = { vm.onLinkTelegram() },
                         onSupport = { vm.openSupport() },
                         onBack = { screen = Screen.TARIFF }
