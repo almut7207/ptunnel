@@ -30,6 +30,8 @@ class Prefs(private val context: Context) {
         val AUTOCONNECT = stringPreferencesKey("autoconnect")
         val BYPASS_OFFERED = stringPreferencesKey("bypass_offered")
         val IMPORT_OFFERED = stringPreferencesKey("import_offered")
+        val RULESET_HASHES = stringPreferencesKey("ruleset_hashes")
+        val RULESET_SYNCED_AT = stringPreferencesKey("ruleset_synced_at")
     }
 
     /**
@@ -55,6 +57,32 @@ class Prefs(private val context: Context) {
         context.dataStore.edit {
             it[Keys.PHONE] = phone
             it[Keys.USERNAME] = "phone_$phone"
+        }
+    }
+
+    suspend fun ruleSetHashes(): Map<String, String> {
+        val raw = context.dataStore.data.map { it[Keys.RULESET_HASHES] }.first()
+            ?: return emptyMap()
+        return runCatching {
+            val json = org.json.JSONObject(raw)
+            json.keys().asSequence().associateWith { json.getString(it) }
+        }.getOrDefault(emptyMap())
+    }
+
+    suspend fun saveRuleSetHash(name: String, hash: String) {
+        val current = ruleSetHashes().toMutableMap()
+        current[name] = hash
+        val json = org.json.JSONObject(current as Map<*, *>)
+        context.dataStore.edit { it[Keys.RULESET_HASHES] = json.toString() }
+    }
+
+    suspend fun ruleSetSyncedAt(): Long =
+        context.dataStore.data.map { it[Keys.RULESET_SYNCED_AT] }.first()
+            ?.toLongOrNull() ?: 0L
+
+    suspend fun markRuleSetSynced() {
+        context.dataStore.edit {
+            it[Keys.RULESET_SYNCED_AT] = System.currentTimeMillis().toString()
         }
     }
 

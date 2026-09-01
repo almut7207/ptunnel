@@ -125,17 +125,60 @@ object ConfigImporter {
     }
 
     /** Импорт vless-ссылки из буфера — для armor. */
-    suspend fun importVless(
-        link: String,
+    /**
+     * Импорт из буфера: понимает и vless://-ссылку (armor),
+     * и vpn://import/<base64> от Amnezia (stainless), и голый INI-текст.
+     */
+    suspend fun importFromText(
+        raw: String,
         knownIds: Set<String>,
         store: TunnelStore
     ): Boolean = withContext(Dispatchers.IO) {
-        val creds = runCatching { ConfigParsers.parseVless(link.trim()) }.getOrNull()
+        val text = raw.trim()
+
+        // armor
+        if (text.startsWith("vless://")) {
+            val creds = runCatching { ConfigParsers.parseVless(text) }.getOrNull()
+                ?: return@withContext false
+            if (creds.uuid !in knownIds) return@withContext false
+            store.save(LocalTunnel(
+                id = creds.uuid,
+                tariff = "armor",
+                blob = ConfigParsers.serialize(creds),
+                createdAt = System.currentTimeMillis()
+            ))
+            return@withContext true
+        }
+
+        // stainless: vpn://import/<base64>?name=...
+        val ini = when {
+            text.startsWith("vpn://import/") -> {
+                val b64 = text.removePrefix("vpn://import/").substringBefore("?")
+                runCatching {
+                    String(android.util.Base64.decode(b64, android.util.Base64.DEFAULT))
+                }.getOrNull() ?: return@withContext false
+            }
+            text.contains("[Interface]") -> text
+            else -> {
+                // пробуем как base64 — бот присылает конфиг именно так
+                val decoded = runCatching {
+                    String(android.util.Base64.decode(text, android.util.Base64.DEFAULT))
+                }.getOrNull()
+                if (decoded != null && decoded.contains("[Interface]")) decoded
+                else return@withContext false
+            }
+        }
+
+        val creds = runCatching { ConfigParsers.parseAwg(ini) }.getOrNull()
             ?: return@withContext false
-        if (creds.uuid !in knownIds) return@withContext false
+        if (creds.privateKey.isBlank()) return@withContext false
+
+        val ip = creds.address.substringBefore("/")
+        if (ip.isBlank() || ip !in knownIds) return@withContext false
+
         store.save(LocalTunnel(
-            id = creds.uuid,
-            tariff = "armor",
+            id = ip,
+            tariff = if (creds.jc > 0) "stainless" else "light",
             blob = ConfigParsers.serialize(creds),
             createdAt = System.currentTimeMillis()
         ))

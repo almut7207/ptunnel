@@ -33,6 +33,8 @@ import xyz.babyplatipus.ptunnel.data.model.TunnelInfo
 import xyz.babyplatipus.ptunnel.data.ConfigImporter
 import kotlinx.coroutines.withTimeoutOrNull
 import xyz.babyplatipus.ptunnel.vpn.NetworkWatcher
+import xyz.babyplatipus.ptunnel.data.RuleSets
+import xyz.babyplatipus.ptunnel.data.RuleSetUpdater
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -192,18 +194,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun importFromClipboard(text: String) {
         viewModelScope.launch {
+            _importState.value = ImportState(running = true)
             try {
-                val username = prefs.username() ?: return@launch
-                val ids = ApiClient.userTunnels(username).mapNotNull {
-                    it.optString("full_key").takeIf { s -> s.isNotBlank() }
+                val username = prefs.username() ?: throw IllegalStateException("нет аккаунта")
+                val ids = ApiClient.userTunnels(username).mapNotNull { o ->
+                    val type = o.optString("type")
+                    if (type.contains("ARMOR")) {
+                        o.optString("uuid").ifBlank { o.optString("ip") }
+                    } else {
+                        o.optString("ip")
+                    }.trim().substringBefore("/").takeIf { it.isNotBlank() }
                 }.toSet()
-                val ok = ConfigImporter.importVless(text, ids, store)
+
+                val ok = ConfigImporter.importFromText(text, ids, store)
                 _importState.value = ImportState(
                     result = ConfigImporter.Result(if (ok) 1 else 0, 1, emptyList())
                 )
                 if (ok) loadTunnels()
             } catch (e: Exception) {
-                _importState.value = ImportState(error = e.message)
+                _importState.value = ImportState(error = e.message ?: "ошибка импорта")
             }
         }
     }
@@ -495,17 +504,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // -----------------------------------------------------------------
 
     init {
+        // Основная инициализация: сначала определяем, какой экран показать,
+        // и только потом лезем в сеть — иначе на чистой установке
+        // пользователь видит тарифы вместо экрана входа
         viewModelScope.launch {
             NetworkWatcher.start(getApplication())
-            ApiClient.refreshEndpoints()
 
             ConfigParsers.deserialize(prefs.credentials())?.let {
                 pendingCredentials = it
             }
-            loadApps()
             _needLogin.value = prefs.needLogin()
 
             if (vpnIsUp()) {
+                // Туннель пережил закрытие приложения — восстанавливаем состояние,
+                // а не переподключаемся: иначе разрыв на ровном месте
                 val code = prefs.tariff() ?: "stainless"
                 _state.value = _state.value.copy(
                     connected = true,
@@ -519,11 +531,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             ) {
                 _autoConnectReady.value = true
             }
+
+            loadApps()
+            ApiClient.refreshEndpoints()
         }
 
-        // Отдельная корутина: collect не завершается, поэтому её нельзя
-        // класть в один блок с инициализацией
-            viewModelScope.launch {
+        // Листы качаются отдельно: geosite-blocked весит около 7 МБ
+        // и не должен задерживать показ экрана
+        viewModelScope.launch {
+            runCatching {
+                val changed = RuleSetUpdater.syncIfDue(
+                    RuleSets.dir(getApplication()), prefs
+                )
+                if (changed) android.util.Log.d("ptunnel", "листы обновлены")
+            }
+        }
+
+        // Слежение за сетью: collect не завершается, поэтому отдельной корутиной
+        viewModelScope.launch {
             var wasOffline = false
             NetworkWatcher.online.collect { online ->
                 _state.value = _state.value.copy(offline = !online)
@@ -534,7 +559,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     if (_state.value.connected || prefs.autoConnect()) {
                         android.util.Log.d("ptunnel", "сеть вернулась, переподключаемся")
                         reconnectLast()
-                   }
+                    }
                 }
             }
         }
@@ -977,8 +1002,30 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Вызывается после первого успешного подключения. */
     private suspend fun maybeSuggestBypass() {
         if (prefs.bypassOffered()) return
-        val installed = _apps.value.associateBy { it.packageName }
-        val candidates = DefaultBypass.PACKAGES.mapNotNull { installed[it] }
+
+        // список мог ещё не загрузиться — тогда ждём
+        if (_apps.value.isEmpty()) loadApps()
+        val installed = _apps.value
+
+        // 1) явный список российских сервисов
+        val known = DefaultBypass.PACKAGES.toSet()
+        // 2) эвристика: пакеты с российскими префиксами
+        val byPrefix = installed.filter { app ->
+            val p = app.packageName
+            p.startsWith("ru.") || p.startsWith("su.") ||
+                    p.contains(".ru.") || p.endsWith(".ru")
+        }.map { it.packageName }
+
+        val candidates = installed
+            .filter { it.packageName in known || it.packageName in byPrefix }
+            .filter { it.label.isNotBlank() }          // без имени показывать нечего
+            .distinctBy { it.packageName }
+            .sortedBy { it.label.lowercase() }
+
+        android.util.Log.d("ptunnel",
+            "bypass: известных ${installed.count { it.packageName in known }}, " +
+                    "по префиксу ${byPrefix.size}, итого ${candidates.size}")
+
         if (candidates.isEmpty()) {
             prefs.markBypassOffered()
             return

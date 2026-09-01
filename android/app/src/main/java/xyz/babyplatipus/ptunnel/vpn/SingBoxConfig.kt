@@ -114,7 +114,7 @@ object SingBoxConfig {
                             .put("192.168.0.0/16").put("127.0.0.0/8"))
                         .put("outbound", "direct"))
                     val directSets = listOf(
-                        "russia-ip", "direct-nodes", "geosite-ru", "my-direct"
+                        "russia-ip", "russia-ip-v6", "direct-nodes", "geosite-ru", "my-direct"
                     ).filter { it in availableSets }
                     if (directSets.isNotEmpty()) {
                         put(JSONObject()

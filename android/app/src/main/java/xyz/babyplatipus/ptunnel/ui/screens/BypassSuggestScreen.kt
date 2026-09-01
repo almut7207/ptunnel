@@ -13,11 +13,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import xyz.babyplatipus.ptunnel.data.model.AppEntry
+import androidx.compose.foundation.lazy.LazyColumn
 
 /**
  * Показывается один раз после первого подключения.
- * Предлагает пустить российские сервисы мимо туннеля —
- * им обычно не нужен зарубежный IP, а некоторые на нём ломаются.
+ * Российские сервисы обычно не требуют зарубежного IP, а некоторые
+ * на нём и вовсе отказываются работать — предлагаем пустить их напрямую.
  */
 @Composable
 fun BypassSuggestScreen(
@@ -26,7 +27,9 @@ fun BypassSuggestScreen(
     onSkip: () -> Unit
 ) {
     val selected = remember { mutableStateMapOf<String, Boolean>() }
-    LaunchedEffect(apps) { apps.forEach { selected[it.packageName] = true } }
+    LaunchedEffect(apps) {
+        apps.forEach { selected[it.packageName] = true }
+    }
 
     Column(
         modifier = Modifier
@@ -52,14 +55,14 @@ fun BypassSuggestScreen(
         Spacer(Modifier.height(16.dp))
 
         LazyColumn(modifier = Modifier.weight(1f)) {
-            items(apps) { app ->
+            items(apps, key = { it.packageName }) { app ->
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable {
                             selected[app.packageName] = selected[app.packageName] != true
                         }
-                        .padding(vertical = 10.dp),
+                        .padding(vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Checkbox(
@@ -67,16 +70,28 @@ fun BypassSuggestScreen(
                         onCheckedChange = { selected[app.packageName] = it }
                     )
                     Spacer(Modifier.width(8.dp))
-                    Text(app.label, fontSize = 15.sp)
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            app.label.ifBlank { app.packageName },
+                            fontSize = 15.sp,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                        if (app.label.isNotBlank()) {
+                            Text(
+                                app.packageName,
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
+                            )
+                        }
+                    }
                 }
+                HorizontalDivider()
             }
         }
 
         Spacer(Modifier.height(12.dp))
         Button(
-            onClick = {
-                onConfirm(selected.filterValues { it }.keys.toSet())
-            },
+            onClick = { onConfirm(selected.filterValues { it }.keys.toSet()) },
             modifier = Modifier.fillMaxWidth()
         ) { Text("Применить") }
         Spacer(Modifier.height(8.dp))

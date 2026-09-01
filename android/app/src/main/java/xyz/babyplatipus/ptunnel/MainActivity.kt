@@ -35,6 +35,7 @@ import xyz.babyplatipus.ptunnel.ui.screens.MenuScreen
 import android.content.Context
 import android.content.BroadcastReceiver
 import android.content.IntentFilter
+import android.os.Build
 
 class MainActivity : ComponentActivity() {
 
@@ -299,9 +300,50 @@ class MainActivity : ComponentActivity() {
                         onImport = { vm.beginImportFiles() },
                         onLinkTelegram = { vm.onLinkTelegram() },
                         onSupport = { vm.openSupport() },
+                        onPasteLink = {
+                            val cm = getSystemService(android.content.ClipboardManager::class.java)
+                            val text = cm.primaryClip?.getItemAt(0)?.text?.toString()
+                            if (!text.isNullOrBlank()) vm.importFromClipboard(text)
+                        },
                         onBack = { screen = Screen.TARIFF }
                     )
                 }
+            }
+        }
+        handleIncoming(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncoming(intent)
+    }
+
+    /**
+     * Конфиг может прийти извне: файлом через «Поделиться» из Telegram
+     * или тапом по vless://-ссылке прямо в чате.
+     */
+    private fun handleIncoming(intent: Intent?) {
+        when (intent?.action) {
+            Intent.ACTION_SEND -> {
+                val uri = if (Build.VERSION.SDK_INT >= 33) {
+                    intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+                }
+                if (uri != null) {
+                    vm.onFilesPicked(listOf(uri))
+                    return
+                }
+                // некоторые приложения шлют ссылку текстом, а не файлом
+                val text = intent.getStringExtra(Intent.EXTRA_TEXT)
+                if (!text.isNullOrBlank()) vm.importFromClipboard(text)
+            }
+
+            Intent.ACTION_VIEW -> {
+                val link = intent.dataString
+                if (!link.isNullOrBlank()) vm.importFromClipboard(link)
             }
         }
     }

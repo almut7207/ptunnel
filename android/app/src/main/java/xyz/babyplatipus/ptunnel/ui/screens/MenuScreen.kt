@@ -19,6 +19,7 @@ fun MenuScreen(
     onTunnels: () -> Unit,
     onSplit: () -> Unit,
     onImport: () -> Unit,
+    onPasteLink: () -> Unit,
     onLinkTelegram: () -> Unit,
     onSupport: () -> Unit,
     onBack: () -> Unit
@@ -48,6 +49,7 @@ fun MenuScreen(
         MenuItem("Мои туннели", "Баланс, продление, переключение", onTunnels)
         MenuItem("Раздельные туннели", "Какие приложения идут мимо VPN", onSplit)
         MenuItem("Импорт конфигов", "Перенести туннели, созданные раньше", onImport)
+        MenuItem("Вставить ссылку", "vless-ссылка из бота для ARMOR", onPasteLink)
         if (!linked) {
             MenuItem("Подтвердить в Telegram", "Нужно для оплаты и продления", onLinkTelegram)
         }

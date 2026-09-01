@@ -15,6 +15,7 @@ object RuleSets {
         "my-direct",
         "geosite-blocked",
         "russia-ip",
+        "russia-ip-v6",
         "direct-nodes"
     )
 
