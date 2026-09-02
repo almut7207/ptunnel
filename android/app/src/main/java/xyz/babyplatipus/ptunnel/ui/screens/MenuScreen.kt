@@ -20,6 +20,7 @@ fun MenuScreen(
     onSplit: () -> Unit,
     onImport: () -> Unit,
     onPasteLink: () -> Unit,
+    onForceStop: () -> Unit,
     onLinkTelegram: () -> Unit,
     onSupport: () -> Unit,
     onBack: () -> Unit
@@ -48,12 +49,13 @@ fun MenuScreen(
 
         MenuItem("Мои туннели", "Баланс, продление, переключение", onTunnels)
         MenuItem("Раздельные туннели", "Какие приложения идут мимо VPN", onSplit)
-        MenuItem("Импорт конфигов", "Перенести туннели, созданные раньше", onImport)
-        MenuItem("Вставить ссылку", "vless-ссылка из бота для ARMOR", onPasteLink)
+        MenuItem("Импорт конфига из файла", "Выберите .conf на устройстве", onImport)
+        MenuItem("Импорт конфига из ссылки", "Скопируйте ссылку из бота", onPasteLink)
         if (!linked) {
             MenuItem("Подтвердить в Telegram", "Нужно для оплаты и продления", onLinkTelegram)
         }
         MenuItem("Поддержка", "Написать в бот", onSupport)
+        MenuItem("Аварийное отключение", "Отключить туннель", onForceStop)
     }
 }
 

@@ -78,6 +78,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _activeTunnelId = MutableStateFlow<String?>(null)
     val activeTunnelId: StateFlow<String?> = _activeTunnelId.asStateFlow()
+    private val _importedPendingCheck = MutableStateFlow<String?>(null)
+    private val _offerSwitch = MutableStateFlow<String?>(null)
+    val offerSwitch: StateFlow<String?> = _offerSwitch.asStateFlow()
 
     data class ImportState(
         val running: Boolean = false,
@@ -85,6 +88,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val treeUri: String? = null,
         val error: String? = null
     )
+
+    fun acceptSwitch() {
+        val id = _offerSwitch.value ?: return
+        _offerSwitch.value = null
+        _importedPendingCheck.value = id
+        switchTo(id)
+    }
+
+    fun declineSwitch() {
+        _offerSwitch.value = null
+    }
 
     fun beginImport() {
         _importState.value = ImportState()
@@ -118,9 +132,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
                 android.util.Log.d("ptunnel", "импорт: ищем среди $ids")
 
-                val res = ConfigImporter.importFiles(getApplication(), uris, ids, store)
+                val (res, firstId) = ConfigImporter.importFilesReturningId(
+                    getApplication(), uris, ids, store
+                )
                 _importState.value = ImportState(result = res)
-                loadTunnels()
+
+                if (firstId != null) {
+                    loadTunnels()
+                    _offerSwitch.value = firstId
+                }
             } catch (e: Exception) {
                 _importState.value = ImportState(error = e.message ?: "ошибка импорта")
             }
@@ -206,11 +226,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     }.trim().substringBefore("/").takeIf { it.isNotBlank() }
                 }.toSet()
 
-                val ok = ConfigImporter.importFromText(text, ids, store)
+                val imported = ConfigImporter.importFromTextReturningId(text, ids, store)
                 _importState.value = ImportState(
-                    result = ConfigImporter.Result(if (ok) 1 else 0, 1, emptyList())
+                    result = ConfigImporter.Result(if (imported != null) 1 else 0, 1, emptyList())
                 )
-                if (ok) loadTunnels()
+                if (imported != null) {
+                    loadTunnels()
+                    _offerSwitch.value = imported
+                }
             } catch (e: Exception) {
                 _importState.value = ImportState(error = e.message ?: "ошибка импорта")
             }
@@ -276,7 +299,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             prefs.markImportOffered()
             _offerImport.value = false
-            beginImport()
+            _events.send(Event.PasteLink)
         }
     }
 
@@ -383,21 +406,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Переключиться на другой локальный туннель. */
     fun switchTo(id: String) {
         viewModelScope.launch {
-            if (!hasNetwork()) {
-                _state.value = _state.value.copy(
-                    error = "Нет подключения к интернету. Проверьте wi-fi или мобильную сеть."
-                )
-                return@launch
-            }
             val t = store.byId(id) ?: return@launch
             val creds = ConfigParsers.deserialize(t.blob) ?: return@launch
 
-            // гасим текущий
-            val old = pendingCredentials
-            if (old is Credentials.Awg) {
-                withContext(Dispatchers.IO) { runCatching { AwgTunnel.stop(getApplication()) } }
-            }
+            // гасим всё до проверок: свой туннель не должен считаться чужим
             stopAllTunnels(keepSingbox = creds is Credentials.Xray)
+            _activeTunnelId.value = null
+
+            if (!hasNetwork()) {
+                _state.value = _state.value.copy(
+                    error = "Нет подключения к интернету."
+                )
+                return@launch
+            }
 
             prefs.saveCredentials(t.blob, t.tariff)
             pendingCredentials = creds
@@ -418,6 +439,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     ConfigParsers.serialize(creds) else null,
                 excluded = prefs.splitExcluded().toList()
             ))
+        }
+    }
+
+    /** Принудительно погасить всё — на случай зависшего туннеля. */
+    fun forceStop() {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching { AwgTunnel.stopAndWait(getApplication()) }
+            }
+            _events.send(Event.StopVpnService)
+            _state.value = ConnectState()
+            _activeTunnelId.value = null
         }
     }
 
@@ -494,6 +527,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         data class OpenUrl(val url: String) : Event()
         object PickFolder : Event()
         object PickFiles : Event()
+        object PasteLink : Event()
     }
 
     private val _events = Channel<Event>(Channel.BUFFERED)
@@ -514,6 +548,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 pendingCredentials = it
             }
             _needLogin.value = prefs.needLogin()
+            if (!prefs.bypassOffered()) maybeSuggestBypass()
 
             if (vpnIsUp()) {
                 // Туннель пережил закрытие приложения — восстанавливаем состояние,
@@ -533,6 +568,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
 
             loadApps()
+            if (!prefs.bypassOffered()) maybeSuggestBypass()
             ApiClient.refreshEndpoints()
         }
 
@@ -581,6 +617,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 if (it.stage == stage) it.copy(status = status) else it
             }
         )
+    }
+
+    /**
+     * Активен ли VPN другого приложения. Свой отслеживаем по activeTunnelId —
+     * _state.connected сбрасывается раньше, чем гаснет tun, и тогда
+     * собственный туннель принимался за чужой.
+     */
+    private fun foreignVpnActive(): Boolean {
+        if (_activeTunnelId.value != null) return false
+        if (_state.value.connected) return false
+        return vpnIsUp()
     }
 
     /** Переход на ввод номера — если Telegram недоступен. */
@@ -646,6 +693,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 if (!hasNetwork()) {
                     _state.value = _state.value.copy(
                         error = "Нет подключения к интернету. Проверьте wi-fi или мобильную сеть."
+                    )
+                    return@launch
+                }
+                if (foreignVpnActive()) {
+                    _state.value = _state.value.copy(
+                        error = "Обнаружен другой активный VPN. Отключите его в том " +
+                                "приложении — иначе соединения будут рваться."
                     )
                     return@launch
                 }
@@ -759,6 +813,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     mark(Stage.VERIFYING, StageLine.Status.OK)
                     _state.value = _state.value.copy(connected = true)
                     _activeTunnelId.value = idOf(creds)
+                    _importedPendingCheck.value = null
                     if (!prefs.isTelegramLinked()) {
                         _state.value = _state.value.copy(showTelegramPrompt = true)
                     }
@@ -803,6 +858,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     mark(Stage.VERIFYING, StageLine.Status.FAILED)
                     _activeTunnelId.value = null
                     _state.value = _state.value.copy(error = probe.message)
+                    val justImported = _importedPendingCheck.value
+                    if (justImported != null) {
+                        _importedPendingCheck.value = null
+                        _state.value = _state.value.copy(
+                            error = "Этот конфиг не работает — возможно, туннель уже " +
+                                    "удалён. Попробуйте другую ссылку из бота или " +
+                                    "выберите другой туннель в меню."
+                        )
+                        stopEverything()
+                        return@launch
+                    }
                     stopEverything()
                 }
             }
@@ -916,6 +982,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (!hasNetwork()) {
                 _state.value = _state.value.copy(
                     error = "Нет подключения к интернету. Проверьте wi-fi или мобильную сеть."
+                )
+                return@launch
+            }
+            if (foreignVpnActive()) {
+                _state.value = _state.value.copy(
+                    error = "Обнаружен другой активный VPN. Отключите его в том " +
+                            "приложении — иначе соединения будут рваться."
                 )
                 return@launch
             }

@@ -32,6 +32,7 @@ class Prefs(private val context: Context) {
         val IMPORT_OFFERED = stringPreferencesKey("import_offered")
         val RULESET_HASHES = stringPreferencesKey("ruleset_hashes")
         val RULESET_SYNCED_AT = stringPreferencesKey("ruleset_synced_at")
+        val FIRST_RUN_DONE = stringPreferencesKey("first_run_done")
     }
 
     /**
@@ -52,6 +53,13 @@ class Prefs(private val context: Context) {
 
     suspend fun needLogin(): Boolean =
         username().isNullOrBlank() && phone().isNullOrBlank()
+
+    suspend fun firstRunDone(): Boolean =
+        context.dataStore.data.map { it[Keys.FIRST_RUN_DONE] }.first() == "1"
+
+    suspend fun markFirstRunDone() {
+        context.dataStore.edit { it[Keys.FIRST_RUN_DONE] = "1" }
+    }
 
     suspend fun savePhone(phone: String) {
         context.dataStore.edit {

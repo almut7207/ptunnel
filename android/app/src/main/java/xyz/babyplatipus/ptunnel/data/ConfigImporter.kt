@@ -109,6 +109,7 @@ object ConfigImporter {
             }
 
             val ip = creds.address.substringBefore("/")
+            android.util.Log.d("ptunnel", "файл: ip=$ip, ищем среди $knownIds")
             if (ip.isNotBlank() && ip in knownIds) {
                 store.save(LocalTunnel(
                     id = ip,
@@ -122,6 +123,51 @@ object ConfigImporter {
             }
         }
         Result(imported, uris.size, skipped)
+    }
+
+    /**
+     * Импорт выбранных файлов. Возвращает пару: результат для показа
+     * и id первого импортированного туннеля, чтобы сразу на него переключиться.
+     */
+    suspend fun importFilesReturningId(
+        context: Context,
+        uris: List<Uri>,
+        knownIds: Set<String>,
+        store: TunnelStore
+    ): Pair<Result, String?> = withContext(Dispatchers.IO) {
+        var imported = 0
+        var firstId: String? = null
+        val skipped = mutableListOf<String>()
+
+        for (uri in uris) {
+            val text = runCatching {
+                context.contentResolver.openInputStream(uri)
+                    ?.bufferedReader()?.use { it.readText() }
+            }.getOrNull() ?: continue
+
+            val creds = runCatching { ConfigParsers.parseAwg(text) }.getOrNull()
+            if (creds == null || creds.privateKey.isBlank()) {
+                skipped.add(uri.lastPathSegment?.substringAfterLast('/') ?: "?")
+                continue
+            }
+
+            val ip = creds.address.substringBefore("/")
+            android.util.Log.d("ptunnel", "файл: ip=$ip, ищем среди $knownIds")
+
+            if (ip.isNotBlank() && ip in knownIds) {
+                store.save(LocalTunnel(
+                    id = ip,
+                    tariff = if (creds.jc > 0) "stainless" else "light",
+                    blob = ConfigParsers.serialize(creds),
+                    createdAt = System.currentTimeMillis()
+                ))
+                imported++
+                if (firstId == null) firstId = ip
+            } else {
+                skipped.add(ip.ifBlank { uri.lastPathSegment ?: "?" })
+            }
+        }
+        Result(imported, uris.size, skipped) to firstId
     }
 
     /** Импорт vless-ссылки из буфера — для armor. */
@@ -183,5 +229,65 @@ object ConfigImporter {
             createdAt = System.currentTimeMillis()
         ))
         true
+    }
+
+    /**
+     * То же, что importFromText, но возвращает id импортированного туннеля —
+     * чтобы сразу на него переключиться. null = не подошло.
+     */
+    suspend fun importFromTextReturningId(
+        raw: String,
+        knownIds: Set<String>,
+        store: TunnelStore
+    ): String? = withContext(Dispatchers.IO) {
+        val text = raw.trim()
+
+        // armor
+        if (text.startsWith("vless://")) {
+            val creds = runCatching { ConfigParsers.parseVless(text) }.getOrNull()
+                ?: return@withContext null
+            if (creds.uuid !in knownIds) return@withContext null
+            store.save(LocalTunnel(
+                id = creds.uuid,
+                tariff = "armor",
+                blob = ConfigParsers.serialize(creds),
+                createdAt = System.currentTimeMillis()
+            ))
+            return@withContext creds.uuid
+        }
+
+        // stainless: голый base64 (так шлёт бот), vpn://import/<base64> или открытый INI
+        val ini = when {
+            text.startsWith("vpn://import/") -> {
+                val b64 = text.removePrefix("vpn://import/").substringBefore("?")
+                runCatching {
+                    String(android.util.Base64.decode(b64, android.util.Base64.DEFAULT))
+                }.getOrNull() ?: return@withContext null
+            }
+            text.contains("[Interface]") -> text
+            else -> {
+                val cleaned = text.replace("\\s".toRegex(), "")
+                val decoded = runCatching {
+                    String(android.util.Base64.decode(cleaned, android.util.Base64.DEFAULT))
+                }.getOrNull()
+                if (decoded != null && decoded.contains("[Interface]")) decoded
+                else return@withContext null
+            }
+        }
+
+        val creds = runCatching { ConfigParsers.parseAwg(ini) }.getOrNull()
+            ?: return@withContext null
+        if (creds.privateKey.isBlank()) return@withContext null
+
+        val ip = creds.address.substringBefore("/")
+        if (ip.isBlank() || ip !in knownIds) return@withContext null
+
+        store.save(LocalTunnel(
+            id = ip,
+            tariff = if (creds.jc > 0) "stainless" else "light",
+            blob = ConfigParsers.serialize(creds),
+            createdAt = System.currentTimeMillis()
+        ))
+        ip
     }
 }

@@ -36,6 +36,9 @@ import android.content.Context
 import android.content.BroadcastReceiver
 import android.content.IntentFilter
 import android.os.Build
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 
 class MainActivity : ComponentActivity() {
 
@@ -115,6 +118,7 @@ class MainActivity : ComponentActivity() {
                         }
                         is MainViewModel.Event.OpenTelegram -> openTelegram(event.deeplink)
                         is MainViewModel.Event.StopVpnService -> stopVpnService()
+                        is MainViewModel.Event.PasteLink -> pasteFromClipboard()
                         is MainViewModel.Event.PickFiles -> {
                             filesPicker.launch(arrayOf("*/*"))
                         }
@@ -164,6 +168,23 @@ class MainActivity : ComponentActivity() {
                         onSkip = { vm.skipBypass() }
                     )
                     return@PtunnelTheme
+                }
+                val offerSwitch by vm.offerSwitch.collectAsState()
+                offerSwitch?.let {
+                    AlertDialog(
+                        onDismissRequest = { vm.declineSwitch() },
+                        title = { Text("Конфиг импортирован") },
+                        text = { Text("Переключиться на этот туннель сейчас?") },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                vm.acceptSwitch()
+                                screen = Screen.CONNECT
+                            }) { Text("Переключиться") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { vm.declineSwitch() }) { Text("Позже") }
+                        }
+                    )
                 }
                 val autoConnect by vm.autoConnectReady.collectAsState()
                 LaunchedEffect(autoConnect) {
@@ -300,10 +321,11 @@ class MainActivity : ComponentActivity() {
                         onImport = { vm.beginImportFiles() },
                         onLinkTelegram = { vm.onLinkTelegram() },
                         onSupport = { vm.openSupport() },
-                        onPasteLink = {
-                            val cm = getSystemService(android.content.ClipboardManager::class.java)
-                            val text = cm.primaryClip?.getItemAt(0)?.text?.toString()
-                            if (!text.isNullOrBlank()) vm.importFromClipboard(text)
+                        onPasteLink = { pasteFromClipboard() },
+                        onForceStop = {
+                            stopVpnService()
+                            vm.forceStop()
+                            screen = Screen.TARIFF
                         },
                         onBack = { screen = Screen.TARIFF }
                     )
@@ -345,6 +367,20 @@ class MainActivity : ComponentActivity() {
                 val link = intent.dataString
                 if (!link.isNullOrBlank()) vm.importFromClipboard(link)
             }
+        }
+    }
+
+    private fun pasteFromClipboard() {
+        val cm = getSystemService(android.content.ClipboardManager::class.java)
+        val text = cm.primaryClip?.getItemAt(0)?.text?.toString()
+        android.util.Log.d("ptunnel", "буфер: ${text?.take(40)}")
+        if (text.isNullOrBlank()) {
+            android.widget.Toast.makeText(
+                this, "Буфер пуст — скопируйте ссылку из бота",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+        } else {
+            vm.importFromClipboard(text)
         }
     }
 

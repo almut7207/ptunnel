@@ -60,7 +60,7 @@ object SingBoxConfig {
 
         return JSONObject()
             .put("log", JSONObject()
-                .put("level", "trace")
+                .put("level", "warn")
                 .put("output", "box.log")
                 .put("timestamp", true))
             .put("inbounds", JSONArray().put(tun))
