@@ -71,7 +71,7 @@ object SingBoxConfig {
             .put("dns", JSONObject()
                 .put("servers", JSONArray()
                     .put(JSONObject()
-                        .put("type", "https").put("tag", "dns-direct")
+                        .put("type", "udp").put("tag", "dns-direct")
                         .put("server", "77.88.8.8"))
                     .put(JSONObject()
                         .put("type", "https").put("tag", "dns-remote")

@@ -71,7 +71,10 @@ fun SplitScreen(
                 items(apps, key = { it.packageName }) { app ->
                     ListItem(
                         headlineContent = {
-                            Text(app.label, fontWeight = FontWeight.Medium)
+                            Text(
+                                app.label.ifBlank { app.packageName },
+                                fontWeight = FontWeight.Medium
+                            )
                         },
                         supportingContent = {
                             Text(

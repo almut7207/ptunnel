@@ -924,6 +924,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val pm = app.packageManager
 
         val list = withContext(Dispatchers.IO) {
+            // запрашиваем именно запускаемые приложения: getInstalledApplications
+            // без <queries> в манифесте отдаёт урезанный список без меток
             val launchable = pm.queryIntentActivities(
                 android.content.Intent(android.content.Intent.ACTION_MAIN)
                     .addCategory(android.content.Intent.CATEGORY_LAUNCHER),
@@ -934,7 +936,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             launchable
                 .filter { it.packageName != app.packageName }
                 .filter {
-                    // системные показываем только если пользователь их обновлял
                     val isSystem = (it.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
                     val isUpdated = (it.flags and
                             android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
