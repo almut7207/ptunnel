@@ -31,25 +31,19 @@ fun ImportDialog(
                     state.result != null -> {
                         val r = state.result
                         Text(
-                            "Просмотрено файлов: ${r.scanned}\n" +
-                                    "Импортировано туннелей: ${r.imported}",
+                            if (r.imported > 0) "Конфиг импортирован"
+                            else "Не удалось импортировать",
                             fontSize = 14.sp
                         )
-                        if (r.imported == 0 && r.scanned > 0) {
+                        if (r.imported == 0) {
                             Spacer(Modifier.height(8.dp))
                             Text(
-                                "Ни один конфиг не совпал с вашими туннелями. " +
-                                        "Конфиги от Telegram обычно лежат в папке " +
-                                        "«Download» или «Download/Telegram».",
+                                "Эта ссылка не относится к вашим активным туннелям. " +
+                                        "Возможно, туннель уже удалён — попробуйте другую.",
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                             )
                         }
-                        Spacer(Modifier.height(12.dp))
-                        Text(
-                            "Отозвать доступ к папке? Приложению он больше не нужен.",
-                            fontSize = 13.sp
-                        )
                     }
                 }
             }

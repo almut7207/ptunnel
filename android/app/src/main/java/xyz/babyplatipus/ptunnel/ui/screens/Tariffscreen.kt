@@ -38,6 +38,7 @@ fun TariffScreen(
     activeTariff: String?,
     hasOtherLocal: Boolean,
     onDisconnect: () -> Unit,
+    onForceStop: () -> Unit,
     onSelect: (Tariff) -> Unit,
     onReconnect: () -> Unit,
     onOpenTunnels: () -> Unit,
@@ -137,6 +138,18 @@ fun TariffScreen(
 
         TextButton(onClick = onOpenMenu) {
             Text("Меню")
+        }
+
+        Spacer(Modifier.weight(1f))
+        TextButton(
+            onClick = onForceStop,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                "Принудительно отключить",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.error
+            )
         }
     }
 }

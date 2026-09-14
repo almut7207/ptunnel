@@ -32,6 +32,7 @@ import xyz.babyplatipus.ptunnel.ui.screens.ImportDialog
 import xyz.babyplatipus.ptunnel.ui.screens.OfferImportDialog
 import xyz.babyplatipus.ptunnel.ui.screens.LoginScreen
 import xyz.babyplatipus.ptunnel.ui.screens.MenuScreen
+import xyz.babyplatipus.ptunnel.ui.screens.ReferralScreen
 import android.content.Context
 import android.content.BroadcastReceiver
 import android.content.IntentFilter
@@ -62,6 +63,8 @@ class MainActivity : ComponentActivity() {
         }
         vm.onFolderPicked(uri)
     }
+
+    private var awaitingConfigLink = false
 
     private val filesPicker = registerForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments()
@@ -95,6 +98,29 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && awaitingConfigLink) {
+            awaitingConfigLink = false
+            pasteFromClipboard()
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (awaitingConfigLink) {
+            awaitingConfigLink = false
+        }
+    }
+
+    /** Похоже ли содержимое буфера на конфиг — чтобы не гонять человека в бота зря. */
+    private fun looksLikeConfig(text: String?): Boolean {
+        if (text.isNullOrBlank()) return false
+        return text.startsWith("vless://") ||
+                text.startsWith("vpn://import/") ||
+                text.contains("[Interface]") ||
+                (text.length > 200 && text.matches(Regex("[A-Za-z0-9+/=\\s]+")))
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -234,6 +260,10 @@ class MainActivity : ComponentActivity() {
                                 vm.onTariffSelected(it)
                                 screen = Screen.CONNECT
                             },
+                            onForceStop = {
+                                stopVpnService()
+                                vm.forceStop()
+                            },
                             onReconnect = {
                                 vm.reconnectLast()
                                 screen = Screen.CONNECT
@@ -296,6 +326,11 @@ class MainActivity : ComponentActivity() {
                             vm.clearError()
                             screen = Screen.TARIFF
                         },
+                        onForceStop = {
+                            stopVpnService()
+                            vm.forceStop()
+                            screen = Screen.TARIFF
+                        },
                         onOpenMenu = { screen = Screen.MENU }
                     )
 
@@ -314,6 +349,36 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
+                    Screen.REFERRAL -> {
+                        val ref by vm.referral.collectAsState()
+                        val refError by vm.referralError.collectAsState()
+                        LaunchedEffect(Unit) { vm.loadReferral() }
+                        ReferralScreen(
+                            state = ref,
+                            error = refError,
+                            onShare = { link ->
+                                startActivity(Intent.createChooser(
+                                    Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_TEXT,
+                                            "Защищённый туннель без блокировок. " +
+                                                    "3 дня бесплатно по моей ссылке: $link")
+                                    }, "Поделиться"
+                                ))
+                            },
+                            onCopy = { link ->
+                                val cm = getSystemService(android.content.ClipboardManager::class.java)
+                                cm.setPrimaryClip(
+                                    android.content.ClipData.newPlainText("ref", link)
+                                )
+                                android.widget.Toast.makeText(
+                                    this, "Скопировано", android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                            },
+                            onBack = { screen = Screen.MENU }
+                        )
+                    }
+
                     Screen.MENU -> MenuScreen(
                         linked = false,
                         onTunnels = { screen = Screen.TUNNELS },
@@ -321,13 +386,29 @@ class MainActivity : ComponentActivity() {
                         onImport = { vm.beginImportFiles() },
                         onLinkTelegram = { vm.onLinkTelegram() },
                         onSupport = { vm.openSupport() },
-                        onPasteLink = { pasteFromClipboard() },
+                        onPasteLink = {
+                            val cm = getSystemService(android.content.ClipboardManager::class.java)
+                            val text = cm.primaryClip?.getItemAt(0)?.text?.toString()?.trim()
+                            android.util.Log.d("ptunnel", "буфер: ${text?.take(60)}, подходит=${looksLikeConfig(text)}")
+                            if (looksLikeConfig(text)) {
+                                vm.importFromClipboard(text!!)
+                            } else {
+                                awaitingConfigLink = true
+                                vm.openBotForConfig()
+                                android.widget.Toast.makeText(
+                                    this,
+                                    "Найдите в боте сообщение с конфигом, скопируйте ссылку и вернитесь",
+                                    android.widget.Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        },
                         onForceStop = {
                             stopVpnService()
                             vm.forceStop()
                             screen = Screen.TARIFF
                         },
-                        onBack = { screen = Screen.TARIFF }
+                        onBack = { screen = Screen.TARIFF },
+                        onReferral = { screen = Screen.REFERRAL }
                     )
                 }
             }
@@ -346,45 +427,26 @@ class MainActivity : ComponentActivity() {
      * или тапом по vless://-ссылке прямо в чате.
      */
     private fun handleIncoming(intent: Intent?) {
-        when (intent?.action) {
-            Intent.ACTION_SEND -> {
-                val uri = if (Build.VERSION.SDK_INT >= 33) {
-                    intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
-                } else {
-                    @Suppress("DEPRECATION")
-                    intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
-                }
-                if (uri != null) {
-                    vm.onFilesPicked(listOf(uri))
-                    return
-                }
-                // некоторые приложения шлют ссылку текстом, а не файлом
-                val text = intent.getStringExtra(Intent.EXTRA_TEXT)
-                if (!text.isNullOrBlank()) vm.importFromClipboard(text)
-            }
-
-            Intent.ACTION_VIEW -> {
-                val link = intent.dataString
-                if (!link.isNullOrBlank()) vm.importFromClipboard(link)
-            }
+        if (intent?.action == Intent.ACTION_VIEW) {
+            val link = intent.dataString
+            if (!link.isNullOrBlank()) vm.importFromClipboard(link)
         }
     }
 
     private fun pasteFromClipboard() {
         val cm = getSystemService(android.content.ClipboardManager::class.java)
         val text = cm.primaryClip?.getItemAt(0)?.text?.toString()
-        android.util.Log.d("ptunnel", "буфер: ${text?.take(40)}")
         if (text.isNullOrBlank()) {
             android.widget.Toast.makeText(
-                this, "Буфер пуст — скопируйте ссылку из бота",
+                this, "В буфере пусто — скопируйте ссылку в боте",
                 android.widget.Toast.LENGTH_LONG
             ).show()
-        } else {
-            vm.importFromClipboard(text)
+            return
         }
+        vm.importFromClipboard(text)
     }
 
-    private enum class Screen { TARIFF, CONNECT, SPLIT, TUNNELS, MENU }
+    private enum class Screen { TARIFF, CONNECT, SPLIT, TUNNELS, MENU, REFERRAL }
 
     // -----------------------------------------------------------------
 

@@ -43,6 +43,7 @@ fun ConnectScreen(
     onDismissPrompt: () -> Unit,
     onDisconnect: () -> Unit,
     onOpenMenu: () -> Unit,
+    onForceStop: () -> Unit,
     onBack: () -> Unit
 ) {
     Column(
@@ -119,6 +120,18 @@ fun ConnectScreen(
             TextButton(onClick = onOpenMenu, modifier = Modifier.fillMaxWidth()) {
                 Text("Меню")
             }
+        }
+
+        Spacer(Modifier.weight(1f))
+        TextButton(
+            onClick = onForceStop,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                "Принудительно отключить",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.error
+            )
         }
     }
 }

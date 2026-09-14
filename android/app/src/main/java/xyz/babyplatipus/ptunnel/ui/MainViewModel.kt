@@ -82,6 +82,44 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _offerSwitch = MutableStateFlow<String?>(null)
     val offerSwitch: StateFlow<String?> = _offerSwitch.asStateFlow()
 
+    data class ReferralState(
+        val key: String,
+        val botLink: String,
+        val siteLink: String,
+        val invited: Int,
+        val daysEarned: Int
+    )
+
+    private val _referral = MutableStateFlow<ReferralState?>(null)
+    val referral: StateFlow<ReferralState?> = _referral.asStateFlow()
+
+    private val _referralError = MutableStateFlow<String?>(null)
+    val referralError: StateFlow<String?> = _referralError.asStateFlow()
+
+    fun loadReferral() {
+        viewModelScope.launch {
+            val username = prefs.username()
+            if (username.isNullOrBlank()) {
+                _referralError.value = "Нужно войти в аккаунт"
+                return@launch
+            }
+            val json = ApiClient.referral(username)
+            if (json == null) {
+                _referralError.value =
+                    "Подтвердите аккаунт в Telegram — без этого реферальная программа недоступна"
+                return@launch
+            }
+            _referralError.value = null
+            _referral.value = ReferralState(
+                key = json.optString("ref_key"),
+                botLink = json.optString("bot_link"),
+                siteLink = json.optString("site_link"),
+                invited = json.optInt("invited"),
+                daysEarned = json.optInt("days_earned")
+            )
+        }
+    }
+
     data class ImportState(
         val running: Boolean = false,
         val result: ConfigImporter.Result? = null,
@@ -92,7 +130,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun acceptSwitch() {
         val id = _offerSwitch.value ?: return
         _offerSwitch.value = null
-        _importedPendingCheck.value = id
         switchTo(id)
     }
 
@@ -109,6 +146,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun beginImportFiles() {
         _importState.value = ImportState()
         viewModelScope.launch { _events.send(Event.PickFiles) }
+    }
+
+    /** Открывает бота, чтобы человек скопировал ссылку на конфиг. */
+    fun openBotForConfig() {
+        viewModelScope.launch {
+            _events.send(Event.OpenTelegram("tg://resolve?domain=put_in_a_tunnel_bot"))
+        }
     }
 
     fun onFilesPicked(uris: List<android.net.Uri>) {
@@ -228,10 +272,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
                 val imported = ConfigImporter.importFromTextReturningId(text, ids, store)
                 _importState.value = ImportState(
-                    result = ConfigImporter.Result(if (imported != null) 1 else 0, 1, emptyList())
+                    result = ConfigImporter.Result(
+                        if (imported != null) 1 else 0, 1, emptyList()
+                    )
                 )
                 if (imported != null) {
                     loadTunnels()
+                    _importState.value = null      // закрываем диалог импорта
                     _offerSwitch.value = imported
                 }
             } catch (e: Exception) {
@@ -443,6 +490,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Принудительно погасить всё — на случай зависшего туннеля. */
+    /** Принудительно погасить всё — на случай зависшего туннеля. */
     fun forceStop() {
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
@@ -451,6 +499,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             _events.send(Event.StopVpnService)
             _state.value = ConnectState()
             _activeTunnelId.value = null
+            _splitDirty.value = false
+            delay(1000)
+            if (vpnIsUp()) {
+                _state.value = _state.value.copy(
+                    error = "Туннель не отключается. Откройте настройки Android → " +
+                            "Сеть → VPN и отключите вручную."
+                )
+            }
         }
     }
 
@@ -707,8 +763,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // 1. Дёргаем api — сервер генерит ключи и кладёт их
                 //    в базу под dev_<device_id>
                 mark(Stage.REQUESTING_API, StageLine.Status.RUNNING)
-                val username = prefs.username() ?: throw IllegalStateException("нет номера")
-                val (kind, payload) = ApiClient.requestTunnel(username, tariff.code)
+                val username = prefs.username() ?: throw IllegalStateException("нет аккаунта")
+                val tgId = prefs.tgId()?.toLongOrNull() ?: 0L
+                val (kind, payload) = ApiClient.requestTunnel(username, tariff.code, tgId)
                 mark(Stage.REQUESTING_API, StageLine.Status.OK)
 
                 // 2. Ключи приехали обратно

@@ -22,6 +22,7 @@ fun MenuScreen(
     onPasteLink: () -> Unit,
     onForceStop: () -> Unit,
     onLinkTelegram: () -> Unit,
+    onReferral: () -> Unit,
     onSupport: () -> Unit,
     onBack: () -> Unit
 ) {
@@ -49,13 +50,15 @@ fun MenuScreen(
 
         MenuItem("Мои туннели", "Баланс, продление, переключение", onTunnels)
         MenuItem("Раздельные туннели", "Какие приложения идут мимо VPN", onSplit)
-        MenuItem("Импорт конфига из файла", "Выберите .conf на устройстве", onImport)
         MenuItem("Импорт конфига из ссылки", "Скопируйте ссылку из бота", onPasteLink)
+        MenuItem("Импорт конфига из файла", "Выберите .conf на устройстве", onImport)
         if (!linked) {
             MenuItem("Подтвердить в Telegram", "Нужно для оплаты и продления", onLinkTelegram)
         }
         MenuItem("Поддержка", "Написать в бот", onSupport)
+        MenuItem("Пригласить друзей", "До 4 дней за каждого", onReferral)
         MenuItem("Аварийное отключение", "Отключить туннель", onForceStop)
+        MenuItem("Принудительно отключить", "Если туннель завис и не гаснет", onForceStop)
     }
 }
 

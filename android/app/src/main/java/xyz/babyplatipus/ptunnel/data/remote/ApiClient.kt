@@ -70,11 +70,15 @@ object ApiClient {
      * @return пара (kind, payload), где kind = "awg" | "xray",
      *         payload = INI-текст либо vless://-ссылка
      */
-    suspend fun requestTunnel(username: String, tariff: String): Pair<String, String> {
+    suspend fun requestTunnel(
+        username: String,
+        tariff: String,
+        tgId: Long = 0
+    ): Pair<String, String> {
         if (useMock) return mockTunnel(tariff)
 
         val body = JSONObject()
-            .put("tg_id", 0)
+            .put("tg_id", tgId)
             .put("username", username)
             .put("tariff", tariff.uppercase())
             .put("ref", JSONObject.NULL)
@@ -90,6 +94,12 @@ object ApiClient {
 
         return if (text.startsWith("vless://")) "xray" to text else "awg" to text
     }
+
+    /** Реферальный код пользователя и статистика. */
+    suspend fun referral(username: String): JSONObject? = runCatching {
+        val json = get("/referral?username=$username")
+        if (json.optBoolean("success", false)) json else null
+    }.getOrNull()
 
     /** Адреса зарубежных прокси-нод — ожидаемые exit-IP при рабочем туннеле. */
     suspend fun exitIps(): Set<String> {
