@@ -108,9 +108,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (awaitingConfigLink) {
-            awaitingConfigLink = false
-        }
+        vm.recheckConnection()
     }
 
     /** Похоже ли содержимое буфера на конфиг — чтобы не гонять человека в бота зря. */

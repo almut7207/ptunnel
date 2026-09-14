@@ -96,6 +96,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _referralError = MutableStateFlow<String?>(null)
     val referralError: StateFlow<String?> = _referralError.asStateFlow()
 
+    private var recheckInProgress = false
+
     fun loadReferral() {
         viewModelScope.launch {
             val username = prefs.username()
@@ -568,6 +570,43 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     waiting = false,
                     error = e.message ?: "не удалось создать счёт"
                 )
+            }
+        }
+    }
+
+    fun recheckConnection() {
+        if (!_state.value.connected) return
+        // пайплайн ещё идёт — там своя проба, вторая только помешает
+        if (_state.value.lines.any { it.status == StageLine.Status.RUNNING }) return
+        if (recheckInProgress) return
+
+        viewModelScope.launch {
+            recheckInProgress = true
+            try {
+                // если VPN вообще снят системой — проверять нечего
+                if (!vpnIsUp()) {
+                    _state.value = _state.value.copy(
+                        connected = false,
+                        error = "Туннель был отключён. Подключитесь заново."
+                    )
+                    _activeTunnelId.value = null
+                    return@launch
+                }
+
+                val exitIps = runCatching { ApiClient.exitIps() }.getOrDefault(emptySet())
+                when (TunnelProbe.run(exitIps)) {
+                    is TunnelProbe.Result.Ok -> Unit   // всё хорошо, молчим
+                    else -> {
+                        android.util.Log.w("ptunnel", "туннель мёртв после паузы")
+                        _state.value = _state.value.copy(
+                            connected = false,
+                            error = "Соединение потеряно. Подключитесь заново."
+                        )
+                        stopAllTunnels()
+                    }
+                }
+            } finally {
+                recheckInProgress = false
             }
         }
     }
