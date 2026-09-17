@@ -20,7 +20,7 @@ data class Tariff(
             code = "armor",
             title = "ARMOR",
             subtitle = "VLESS + Reality — проходит там, где не проходит остальное",
-            priceRub = 1000,
+            priceRub = 700,
             protocol = "xray"
         )
         val ALL = listOf(STAINLESS, ARMOR)

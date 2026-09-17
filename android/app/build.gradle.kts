@@ -1,8 +1,15 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.serialization")
     id("org.jetbrains.kotlin.plugin.compose")
+}
+
+val keystoreProps = Properties().apply {
+    val f = rootProject.file("keystore.properties")
+    if (f.exists()) load(f.inputStream())
 }
 
 android {
@@ -33,16 +40,16 @@ android {
         applicationId = "xyz.babyplatipus.ptunnel"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 3
+        versionName = "0.1.2"
     }
 
     signingConfigs {
         create("release") {
-            storeFile = file(System.getProperty("user.home") + "/ptunnel-release.jks")
-            storePassword = System.getenv("PTUNNEL_STORE_PASS") ?: ""
-            keyAlias = "ptunnel"
-            keyPassword = System.getenv("PTUNNEL_KEY_PASS") ?: ""
+            storeFile = file(keystoreProps.getProperty("storeFile"))
+            storePassword = keystoreProps.getProperty("storePassword")
+            keyAlias = keystoreProps.getProperty("keyAlias")
+            keyPassword = keystoreProps.getProperty("keyPassword")
         }
     }
 

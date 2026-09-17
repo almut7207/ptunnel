@@ -306,6 +306,7 @@ class MainActivity : ComponentActivity() {
                             PaymentDialog(
                                 state = it,
                                 onPay = { mean -> vm.pay(mean) },
+                                onToggle = { id -> vm.togglePaymentSelection(id) },
                                 onDismiss = { vm.cancelPayment() }
                             )
                         }

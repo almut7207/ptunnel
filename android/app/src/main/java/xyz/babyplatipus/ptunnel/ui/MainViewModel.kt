@@ -526,14 +526,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val payment: StateFlow<PaymentState?> = _payment.asStateFlow()
 
     data class PaymentState(
-        val tunnel: TunnelInfo,
+        val options: List<TunnelInfo>,     // что вообще можно оплатить
+        val selected: Set<String>,         // отмеченные id
         val waiting: Boolean = false,
         val done: Boolean = false,
         val error: String? = null
-    )
+    ) {
+        /** Armor дороже — считаем по типу каждого выбранного. */
+        val amount: Int
+            get() = options.filter { it.id in selected }
+                .sumOf { if (it.type.contains("ARMOR")) 700 else 350 }
+    }
 
     fun startPayment(tunnel: TunnelInfo) {
-        _payment.value = PaymentState(tunnel)
+        val options = _tunnels.value.filter { it.balanceMinutes >= 0 }
+            .ifEmpty { listOf(tunnel) }
+        _payment.value = PaymentState(
+            options = options,
+            selected = options.map { it.id }.toSet()   // по умолчанию продлеваем всё
+        )
+    }
+
+    fun togglePaymentSelection(id: String) {
+        val p = _payment.value ?: return
+        if (p.waiting || p.done) return
+        val next = if (id in p.selected) p.selected - id else p.selected + id
+        _payment.value = p.copy(selected = next)
     }
 
     fun cancelPayment() {
@@ -542,18 +560,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun pay(mean: String) {
         val p = _payment.value ?: return
+        if (p.selected.isEmpty()) return
         viewModelScope.launch {
             _payment.value = p.copy(waiting = true, error = null)
             try {
                 val username = prefs.username() ?: throw IllegalStateException("нет аккаунта")
-                val type = if (p.tunnel.type.contains("ARMOR")) "ARMOR" else "STAINLESS"
-                val amount = if (type == "ARMOR") 1000 else 350
+                val chosen = p.options.filter { it.id in p.selected }
 
                 val (url, orderId) = ApiClient.createPayment(
                     username = username,
-                    amount = amount,
-                    tunnelTypes = listOf(type),
-                    selectedIps = listOf(p.tunnel.id),
+                    amount = p.amount,
+                    tunnelTypes = chosen.map {
+                        if (it.type.contains("ARMOR")) "ARMOR" else "STAINLESS"
+                    },
+                    selectedIps = chosen.map { it.id },
                     mean = mean
                 )
                 _events.send(Event.OpenUrl(url))
