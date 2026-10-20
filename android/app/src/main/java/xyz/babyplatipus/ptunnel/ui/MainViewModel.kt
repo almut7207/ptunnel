@@ -377,7 +377,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
 
                 if (remote == null) {
-                    // Сервер не ответил — показываем то, что есть локально
+                    // Сервер не ответил — показываем то, что есть локально.
+                    // Ничего не удаляем: отсутствие связи не значит, что туннелей нет
                     _tunnels.value = local.map { t -> t.toInfo() }
                     _tunnelsError.value =
                         "Сервер недоступен. Показаны туннели этого устройства, " +
@@ -385,26 +386,48 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     return@launch
                 }
 
-                val localById = local.associateBy { it.id }
-                android.util.Log.d("ptunnel", "local: ${localById.keys}")
-
-                val fromRemote = remote.mapNotNull { o ->
+                // armor опознаётся по uuid, wg/awg — по адресу.
+                // full_key для stainless — публичный ключ WG, НЕ идентификатор
+                fun remoteId(o: org.json.JSONObject): String {
                     val type = o.optString("type")
-                    // armor опознаётся по uuid, wg/awg — по адресу.
-                    // full_key для stainless — это публичный ключ, не идентификатор
-                    val id = if (type.contains("ARMOR")) {
+                    return if (type.contains("ARMOR")) {
                         o.optString("uuid").ifBlank { o.optString("ip") }
                     } else {
                         o.optString("ip")
                     }.trim().substringBefore("/")
+                }
 
-                    android.util.Log.d("ptunnel", "remote: type=$type id=$id")
+                val aliveIds = remote.map { remoteId(it) }.filter { it.isNotBlank() }.toSet()
+                android.util.Log.d("ptunnel", "local: ${local.map { it.id }}, alive: $aliveIds")
+
+                // Локальные конфиги, которых сервер не знает: биллинг снёс пир
+                // при исчерпании баланса, восстановить нельзя.
+                // Пустой ответ не трогаем — он может быть следствием сбоя на бэке,
+                // и тогда разом потерялись бы все ключи
+                val dead = local.filterNot { it.id in aliveIds }
+                var removed = 0
+                if (remote.isNotEmpty() && dead.isNotEmpty()) {
+                    android.util.Log.d("ptunnel", "удаляем мёртвые: ${dead.map { it.id }}")
+                    dead.forEach { store.remove(it.id) }
+                    removed = dead.size
+
+                    val curId = idOf(ConfigParsers.deserialize(prefs.credentials()))
+                    if (curId != null && dead.any { it.id == curId }) {
+                        prefs.clearCredentials()
+                        pendingCredentials = null
+                    }
+                }
+
+                val stillLocal = (if (removed > 0) store.all() else local)
+                    .associateBy { it.id }
+
+                _tunnels.value = remote.mapNotNull { o ->
+                    val id = remoteId(o)
                     if (id.isBlank()) return@mapNotNull null
-
-                    val match = localById[id]
+                    val match = stillLocal[id]
                     TunnelInfo(
                         id = id,
-                        type = type,
+                        type = o.optString("type"),
                         balanceMinutes = o.optInt("balance"),
                         active = o.optBoolean("active"),
                         local = match != null,
@@ -412,13 +435,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     )
                 }
 
-                // Локальные конфиги, которых сервер не вернул: туннель мог быть
-                // снесён биллингом, но креды на устройстве остались
-                val remoteIds = fromRemote.map { it.id }.toSet()
-                val orphans = local.filterNot { it.id in remoteIds }.map { t -> t.toInfo() }
+                _tunnelsError.value = if (removed > 0)
+                    "Удалено туннелей: $removed — срок оплаты истёк, " +
+                            "создайте новый на экране тарифов"
+                else null
 
-                _tunnels.value = fromRemote + orphans
-                _tunnelsError.value = null
             } catch (e: Exception) {
                 _tunnels.value = local.map { t -> t.toInfo() }
                 _tunnelsError.value = e.message ?: "не удалось загрузить список"

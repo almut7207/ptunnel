@@ -27,6 +27,8 @@ import xyz.babyplatipus.ptunnel.data.model.Tariff
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 
 /**
  * Первый экран приложения. Никакого логина — сразу выбор тарифа.
@@ -49,6 +51,7 @@ fun TariffScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
+            .verticalScroll(rememberScrollState())
             .padding(24.dp)
     ) {
         Spacer(Modifier.height(32.dp))

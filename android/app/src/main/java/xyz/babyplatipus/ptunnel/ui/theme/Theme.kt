@@ -6,6 +6,9 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 
 private val Sky = Color(0xFF0EA5E9)
 private val Deep = Color(0xFF0B1220)
@@ -29,8 +32,17 @@ private val LightColors = lightColorScheme(
 
 @Composable
 fun PtunnelTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = if (isSystemInDarkTheme()) DarkColors else DarkColors, // всегда тёмная — брендовая
-        content = content
+    val density = LocalDensity.current
+    val cappedDensity = Density(
+        density = density.density,
+        // при 200% вёрстка рассыпается; 1.4 читаемо и не ломает экраны
+        fontScale = density.fontScale.coerceAtMost(1.4f)
     )
+
+    CompositionLocalProvider(LocalDensity provides cappedDensity) {
+        MaterialTheme(
+            colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors,
+            content = content
+        )
+    }
 }

@@ -30,6 +30,8 @@ import xyz.babyplatipus.ptunnel.data.model.ConnectState
 import xyz.babyplatipus.ptunnel.data.model.Credentials
 import xyz.babyplatipus.ptunnel.data.model.StageLine
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 
 /**
  * Экран подключения. Пока идёт пайплайн — показывает, что именно
@@ -50,6 +52,7 @@ fun ConnectScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
+            .verticalScroll(rememberScrollState())
             .padding(24.dp)
     ) {
         Spacer(Modifier.height(24.dp))
@@ -122,7 +125,7 @@ fun ConnectScreen(
             }
         }
 
-        Spacer(Modifier.weight(1f))
+        Spacer(Modifier.height(24.dp))
         TextButton(
             onClick = onForceStop,
             modifier = Modifier.fillMaxWidth()
