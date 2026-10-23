@@ -556,7 +556,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         /** Armor дороже — считаем по типу каждого выбранного. */
         val amount: Int
             get() = options.filter { it.id in selected }
-                .sumOf { if (it.type.contains("ARMOR")) 700 else 350 }
+                .fold(0) { acc, t -> acc + if (t.type.contains("ARMOR")) 700 else 350 }
     }
 
     fun startPayment(tunnel: TunnelInfo) {
@@ -913,8 +913,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
             mark(Stage.CONNECTING, StageLine.Status.RUNNING)
             if (creds is Credentials.Awg) {
-                withContext(Dispatchers.IO) {
-                    AwgTunnel.start(getApplication(), creds.rawConfig, prefs.splitExcluded())
+                try {
+                    withContext(Dispatchers.IO) {
+                        AwgTunnel.start(getApplication(), creds.rawConfig, prefs.splitExcluded())
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("ptunnel", "AWG не стартовал", e)
+                    mark(Stage.CONNECTING, StageLine.Status.FAILED)
+                    _state.value = _state.value.copy(
+                        error = "Не удалось запустить туннель: " +
+                                (e.message ?: e.javaClass.simpleName)
+                    )
+                    return@launch
                 }
             }
             mark(Stage.CONNECTING, StageLine.Status.OK)

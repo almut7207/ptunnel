@@ -4,7 +4,7 @@ import android.content.Context
 import org.amnezia.awg.backend.Backend
 import org.amnezia.awg.backend.GoBackend
 import org.amnezia.awg.backend.Tunnel
-import org.amnezia.awg.backend.TunnelActionHandler
+//import org.amnezia.awg.backend.TunnelActionHandler
 import org.amnezia.awg.config.Config
 import java.io.ByteArrayInputStream
 
@@ -28,24 +28,22 @@ object AwgTunnel {
         private set
 
     private val tunnel = object : Tunnel {
-        override fun getName() = NAME
+        override fun getName() = "ptunnel"
         override fun onStateChange(newState: Tunnel.State) {
             state = newState
-            android.util.Log.d("ptunnel-awg", "state -> $newState")
+            android.util.Log.d("ptunnel-awg", "state: $newState")
         }
-        override fun isIpv4ResolutionPreferred(): Boolean = true
-        override fun isMetered(): Boolean = false
     }
 
-    private val noopActions = object : TunnelActionHandler {
+/*    private val noopActions = object : TunnelActionHandler {
         override fun runPreUp(cmds: MutableCollection<String>) {}
         override fun runPostUp(cmds: MutableCollection<String>) {}
         override fun runPreDown(cmds: MutableCollection<String>) {}
         override fun runPostDown(cmds: MutableCollection<String>) {}
-    }
+    }*/
 
     private fun backend(context: Context): Backend =
-        backend ?: GoBackend(context.applicationContext, noopActions).also { backend = it }
+        backend ?: GoBackend(context.applicationContext).also { backend = it }
 
     /** configText — то, что приехало с сервера без изменений. */
     /**
@@ -57,7 +55,14 @@ object AwgTunnel {
     fun start(context: Context, configText: String, excluded: Set<String> = emptySet()) {
         val text = if (excluded.isEmpty()) configText
         else injectExcluded(configText, excluded)
-        val cfg = Config.parse(ByteArrayInputStream(text.toByteArray()))
+        val cfg = try {
+            Config.parse(ByteArrayInputStream(configText.toByteArray()))
+        } catch (e: Exception) {
+            android.util.Log.e("ptunnel-awg", "конфиг не разобран: ${e.message}", e)
+            throw IllegalStateException(
+                "Конфиг не поддерживается: ${e.message ?: e.javaClass.simpleName}"
+            )
+        }
         backend(context).setState(tunnel, Tunnel.State.UP, cfg)
     }
 
