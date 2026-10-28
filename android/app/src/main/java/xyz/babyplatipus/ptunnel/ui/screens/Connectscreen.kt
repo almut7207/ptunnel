@@ -42,6 +42,7 @@ import androidx.compose.foundation.verticalScroll
 fun ConnectScreen(
     state: ConnectState,
     onLinkTelegram: () -> Unit,
+    migrationStatus: String? = null,
     onDismissPrompt: () -> Unit,
     onDisconnect: () -> Unit,
     onOpenMenu: () -> Unit,
@@ -73,6 +74,23 @@ fun ConnectScreen(
             color = MaterialTheme.colorScheme.primary
         )
         Spacer(Modifier.height(24.dp))
+        migrationStatus?.let {
+            Text(
+                it,
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(Modifier.height(12.dp))
+        }
+
+        state.info?.let {
+            Text(
+                it,
+                fontSize = 13.sp,
+                color = Color(0xFF4CAF50)
+            )
+            Spacer(Modifier.height(12.dp))
+        }
 
         state.lines.forEach { line ->
             StageRow(line)

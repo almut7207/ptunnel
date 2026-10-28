@@ -26,7 +26,8 @@ fun MenuScreen(
     onLinkTelegram: () -> Unit,
     onReferral: () -> Unit,
     onSupport: () -> Unit,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onUpgradeProtocol: (() -> Unit)?
 ) {
     Column(
         modifier = Modifier
@@ -55,13 +56,15 @@ fun MenuScreen(
         MenuItem("Раздельные туннели", "Какие приложения идут мимо VPN", onSplit)
         MenuItem("Импорт конфига из ссылки", "Скопируйте ссылку из бота", onPasteLink)
         MenuItem("Импорт конфига из файла", "Выберите .conf на устройстве", onImport)
+        onUpgradeProtocol?.let {
+            MenuItem("Перевести на новый протокол", "Устойчивее к блокировкам", it)
+        }
         if (!linked) {
             MenuItem("Подтвердить в Telegram", "Нужно для оплаты и продления", onLinkTelegram)
         }
         MenuItem("Поддержка", "Написать в бот", onSupport)
         MenuItem("Пригласить друзей", "До 4 дней за каждого", onReferral)
         MenuItem("Аварийное отключение", "Отключить туннель", onForceStop)
-        MenuItem("Принудительно отключить", "Если туннель завис и не гаснет", onForceStop)
     }
 }
 

@@ -36,32 +36,46 @@ object TunnelProbe {
      * @param exitIps адреса зарубежных прокси-нод из /api/exit_ips.
      *                Пустой набор — сверять не с чем, засчитываем любой ответ.
      */
-    suspend fun run(exitIps: Set<String>): Result = withContext(Dispatchers.IO) {
-        var lastIp: String? = null
+    suspend fun run(exitIps: Set<String>, patient: Boolean = false): Result =
+        withContext(Dispatchers.IO) {
+            var lastIp: String? = null
 
-        // ядру нужно время, чтобы поднять tun и перехватить маршруты
-        delay(6000)
+            // после миграции данные пойдут только когда сервер переключит пир,
+            // это до 70 секунд — первые неответы не считаем неудачей
+            val attempts = if (patient) 15 else 4
+            val pause = if (patient) 6000L else 2000L
 
-        repeat(10) { attempt ->
-            if (attempt > 0) delay(3000)
-            val ip = withTimeoutOrNull(15_000) { fetchExitIp() }
-            if (ip != null) {
-                lastIp = ip
-                android.util.Log.d("ptunnel-box", "probe $attempt -> $ip")
-                if (exitIps.isEmpty() || ip in exitIps) {
-                    return@withContext Result.Ok(ip)
+            delay(2500)
+            repeat(attempts) { attempt ->
+                if (attempt > 0) delay(pause)
+                val ip = withTimeoutOrNull(8_000) { fetchExitIp() }
+                if (ip != null) {
+                    lastIp = ip
+                    android.util.Log.d("ptunnel-box", "probe $attempt -> $ip")
+                    if (exitIps.isEmpty() || ip in exitIps) {
+                        // exit-IP совпал, но маршруты могли ещё не встать —
+                        // проверяем, что заблокированный ресурс реально открывается
+                        if (blockedReachable()) {
+                            return@withContext Result.Ok(ip)
+                        }
+                        android.util.Log.d("ptunnel-box", "exit-IP верный, но трафик не идёт")
+                    }
                 }
             }
+            lastIp?.let { return@withContext Result.Blocked }
+            Result.ServerUnreachable
         }
 
-        // ответ есть, но адрес чужой — трафик идёт мимо туннеля
-        lastIp?.let {
-            android.util.Log.w("ptunnel-box", "exit ip $it не из списка прокси-нод")
-            return@withContext Result.Blocked
-        }
-        Result.ServerUnreachable
-    }
-
+    /** Проверяем ресурс, который без туннеля недоступен из РФ. */
+    private suspend fun blockedReachable(): Boolean = runCatching {
+        withTimeoutOrNull(8_000) {
+            val req = Request.Builder()
+                .url("https://www.youtube.com/generate_204")
+                .head()
+                .build()
+            http.newCall(req).execute().use { it.isSuccessful || it.code == 204 }
+        } ?: false
+    }.getOrDefault(false)
     /**
      * Спрашиваем внешний сервис, с какого адреса мы пришли.
      * Три источника подряд — если один недоступен, пробуем следующий.

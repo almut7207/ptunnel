@@ -40,6 +40,15 @@ import android.os.Build
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 class MainActivity : ComponentActivity() {
 
@@ -141,6 +150,21 @@ class MainActivity : ComponentActivity() {
                             requestVpn()
                         }
                         is MainViewModel.Event.OpenTelegram -> openTelegram(event.deeplink)
+                        is MainViewModel.Event.InstallApk -> {
+                            val file = java.io.File(event.path)
+                            val uri = androidx.core.content.FileProvider.getUriForFile(
+                                this@MainActivity,
+                                "${this@MainActivity.packageName}.fileprovider",
+                                file
+                            )
+                            @Suppress("DEPRECATION")
+                            startActivity(Intent(Intent.ACTION_INSTALL_PACKAGE).apply {
+                                data = uri
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                putExtra(Intent.EXTRA_NOT_UNKNOWN_SOURCE, true)
+                                putExtra(Intent.EXTRA_RETURN_RESULT, true)
+                            })
+                        }
                         is MainViewModel.Event.StopVpnService -> stopVpnService()
                         is MainViewModel.Event.PasteLink -> pasteFromClipboard()
                         is MainViewModel.Event.PickFiles -> {
@@ -169,6 +193,7 @@ class MainActivity : ComponentActivity() {
                 val needPhone by vm.needPhone.collectAsState()
                 val needLogin by vm.needLogin.collectAsState()
                 val offerImport by vm.offerImport.collectAsState()
+                val canUpg by vm.canUpgrade.collectAsState()
                 if (offerImport) {
                     OfferImportDialog(
                         onAccept = { vm.acceptOfferImport() },
@@ -193,6 +218,78 @@ class MainActivity : ComponentActivity() {
                     )
                     return@PtunnelTheme
                 }
+
+                val update by vm.updateAvailable.collectAsState()
+                val updProgress by vm.updateProgress.collectAsState()
+                update?.let { info ->
+                    AlertDialog(
+                        onDismissRequest = { if (updProgress < 0) vm.dismissUpdate() },
+                        title = { Text("Доступна версия ${info.versionName}") },
+                        text = {
+                            Column {
+                                Text(info.changelog)
+                                Spacer(Modifier.height(8.dp))
+                                Text(
+                                    "После установки откройте приложение заново — " +
+                                            "система закроет его на время обновления.",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                                )
+                                if (updProgress >= 0) {
+                                    Spacer(Modifier.height(12.dp))
+                                    LinearProgressIndicator(
+                                        progress = { updProgress / 100f },
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                    Spacer(Modifier.height(4.dp))
+                                    Text("Загрузка $updProgress%", fontSize = 12.sp)
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            if (updProgress < 0) {
+                                TextButton(onClick = { vm.downloadUpdate() }) {
+                                    Text("Обновить")
+                                }
+                            }
+                        },
+                        dismissButton = {
+                            if (updProgress < 0) {
+                                TextButton(onClick = { vm.dismissUpdate() }) { Text("Позже") }
+                            }
+                        }
+                    )
+                }
+
+                val offerUpgrade by vm.offerAwgUpgrade.collectAsState()
+                val upgradeRunning by vm.awgUpgradeRunning.collectAsState()
+                if (offerUpgrade) {
+                    AlertDialog(
+                        onDismissRequest = { vm.dismissAwgUpgrade() },
+                        title = { Text("Доступен новый протокол") },
+                        text = {
+                            Text(
+                                "Ваш туннель работает на прежней версии протокола. " +
+                                        "Новая устойчивее к блокировкам — особенно на " +
+                                        "мобильном интернете. Ключи и адрес сохранятся, " +
+                                        "подключение переустановится автоматически."
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(
+                                onClick = {
+                                    vm.doAwgUpgrade()
+                                    screen = Screen.CONNECT
+                                },
+                                enabled = !upgradeRunning
+                            ) { Text("Перевести") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { vm.dismissAwgUpgrade() }) { Text("Позже") }
+                        }
+                    )
+                }
+
                 val offerSwitch by vm.offerSwitch.collectAsState()
                 offerSwitch?.let {
                     AlertDialog(
@@ -312,26 +409,30 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    Screen.CONNECT -> ConnectScreen(
-                        state = state,
-                        onLinkTelegram = { vm.onLinkTelegram() },
-                        onDismissPrompt = { vm.dismissTelegramPrompt() },
-                        onDisconnect = {
-                            stopVpnService()
-                            vm.disconnect()
-                            screen = Screen.TARIFF
-                        },
-                        onBack = {
-                            vm.clearError()
-                            screen = Screen.TARIFF
-                        },
-                        onForceStop = {
-                            stopVpnService()
-                            vm.forceStop()
-                            screen = Screen.TARIFF
-                        },
-                        onOpenMenu = { screen = Screen.MENU }
-                    )
+                    Screen.CONNECT -> {
+                        val migStatus by vm.migrationStatus.collectAsState()
+                        ConnectScreen(
+                            state = state,
+                            migrationStatus = migStatus,
+                            onLinkTelegram = { vm.onLinkTelegram() },
+                            onDismissPrompt = { vm.dismissTelegramPrompt() },
+                            onDisconnect = {
+                                stopVpnService()
+                                vm.disconnect()
+                                screen = Screen.TARIFF
+                            },
+                            onBack = {
+                                vm.clearError()
+                                screen = Screen.TARIFF
+                            },
+                            onForceStop = {
+                                stopVpnService()
+                                vm.forceStop()
+                                screen = Screen.TARIFF
+                            },
+                            onOpenMenu = { screen = Screen.MENU }
+                        )
+                    }
 
                     Screen.SPLIT -> {
                         val apps by vm.apps.collectAsState()
@@ -385,6 +486,9 @@ class MainActivity : ComponentActivity() {
                         onImport = { vm.beginImportFiles() },
                         onLinkTelegram = { vm.onLinkTelegram() },
                         onSupport = { vm.openSupport() },
+                        onUpgradeProtocol = if (canUpg) {
+                            { vm.doAwgUpgrade(); screen = Screen.CONNECT }
+                        } else null,
                         onPasteLink = {
                             val cm = getSystemService(android.content.ClipboardManager::class.java)
                             val text = cm.primaryClip?.getItemAt(0)?.text?.toString()?.trim()

@@ -33,6 +33,8 @@ class Prefs(private val context: Context) {
         val RULESET_HASHES = stringPreferencesKey("ruleset_hashes")
         val RULESET_SYNCED_AT = stringPreferencesKey("ruleset_synced_at")
         val FIRST_RUN_DONE = stringPreferencesKey("first_run_done")
+        val AWG_UPGRADE_OFFERED = stringPreferencesKey("awg_upgrade_offered")
+        val AWG_UPGRADE_ASKED_AT = stringPreferencesKey("awg_upgrade_asked_at")
     }
 
     /**
@@ -51,6 +53,15 @@ class Prefs(private val context: Context) {
     suspend fun phone(): String? =
         context.dataStore.data.map { it[Keys.PHONE] }.first()
 
+    suspend fun awgUpgradeAskedAt(): Long =
+        context.dataStore.data.map { it[Keys.AWG_UPGRADE_ASKED_AT] }.first()
+            ?.toLongOrNull() ?: 0L
+
+    suspend fun markAwgUpgradeAsked() {
+        context.dataStore.edit {
+            it[Keys.AWG_UPGRADE_ASKED_AT] = System.currentTimeMillis().toString()
+        }
+    }
     suspend fun needLogin(): Boolean =
         username().isNullOrBlank() && phone().isNullOrBlank()
 

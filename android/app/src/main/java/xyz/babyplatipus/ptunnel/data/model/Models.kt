@@ -115,6 +115,7 @@ data class ConnectState(
     val credentials: Credentials? = null,
     val connected: Boolean = false,
     val error: String? = null,
+    val info: String? = null,
     val showTelegramPrompt: Boolean = false,
     val offline: Boolean = false,
     val telegramDeeplink: String? = null

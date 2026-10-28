@@ -35,6 +35,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import xyz.babyplatipus.ptunnel.vpn.NetworkWatcher
 import xyz.babyplatipus.ptunnel.data.RuleSets
 import xyz.babyplatipus.ptunnel.data.RuleSetUpdater
+import xyz.babyplatipus.ptunnel.data.ApkUpdater
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -81,6 +82,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _importedPendingCheck = MutableStateFlow<String?>(null)
     private val _offerSwitch = MutableStateFlow<String?>(null)
     val offerSwitch: StateFlow<String?> = _offerSwitch.asStateFlow()
+    private val _migrationStatus = MutableStateFlow<String?>(null)
+    val migrationStatus: StateFlow<String?> = _migrationStatus.asStateFlow()
 
     data class ReferralState(
         val key: String,
@@ -95,8 +98,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _referralError = MutableStateFlow<String?>(null)
     val referralError: StateFlow<String?> = _referralError.asStateFlow()
+    @Volatile
+    private var migrationJustDone = false
+
+    /** Старый конфиг на случай отката, если миграция не заработает. */
+    private var preMigrationBlob: String? = null
 
     private var recheckInProgress = false
+    private val _canUpgrade = MutableStateFlow(false)
+    val canUpgrade: StateFlow<Boolean> = _canUpgrade.asStateFlow()
+
+    /** Пересчитываем при загрузке и после переключений. */
+    private suspend fun refreshCanUpgrade() {
+        val creds = ConfigParsers.deserialize(prefs.credentials())
+        _canUpgrade.value = isLegacyAwg(creds)
+    }
 
     fun loadReferral() {
         viewModelScope.launch {
@@ -664,6 +680,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         object PickFolder : Event()
         object PickFiles : Event()
         object PasteLink : Event()
+        data class InstallApk(val path: String) : Event()
     }
 
     private val _events = Channel<Event>(Channel.BUFFERED)
@@ -706,6 +723,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             loadApps()
             if (!prefs.bypassOffered()) maybeSuggestBypass()
             ApiClient.refreshEndpoints()
+            checkUpdate()
         }
 
         // Листы качаются отдельно: geosite-blocked весит около 7 МБ
@@ -766,11 +784,133 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return vpnIsUp()
     }
 
+    private val _offerAwgUpgrade = MutableStateFlow(false)
+    val offerAwgUpgrade: StateFlow<Boolean> = _offerAwgUpgrade.asStateFlow()
+
+    private val _awgUpgradeRunning = MutableStateFlow(false)
+    val awgUpgradeRunning: StateFlow<Boolean> = _awgUpgradeRunning.asStateFlow()
+
+    /** Признак старого конфига — отсутствие I1. */
+    private fun isLegacyAwg(creds: Credentials?): Boolean =
+        creds is Credentials.Awg &&
+                !creds.rawConfig.lineSequence().any {
+                    it.trimStart().startsWith("I1", ignoreCase = true)
+                }
+
+    private val AWG_ASK_PERIOD_MS = 24L * 60 * 60 * 1000
+
+    private suspend fun maybeOfferAwgUpgrade(creds: Credentials?) {
+        if (!isLegacyAwg(creds)) return
+        val last = prefs.awgUpgradeAskedAt()
+        if (System.currentTimeMillis() - last < AWG_ASK_PERIOD_MS) return
+        _offerAwgUpgrade.value = true
+    }
+
+    fun dismissAwgUpgrade() {
+        viewModelScope.launch {
+            prefs.markAwgUpgradeAsked()
+            _offerAwgUpgrade.value = false
+        }
+    }
+
+    fun doAwgUpgrade() {
+
+        viewModelScope.launch {
+            _offerAwgUpgrade.value = false
+            val creds = pendingCredentials as? Credentials.Awg ?: return@launch
+
+            _awgUpgradeRunning.value = true
+            android.util.Log.d("ptunnel", "migrate: ключ длиной ${creds.privateKey.length}")
+            val resp = runCatching { ApiClient.migrateAwg(creds.privateKey) }
+                .onFailure { android.util.Log.e("ptunnel", "migrate упал", it) }
+                .getOrNull()
+            android.util.Log.d("ptunnel", "migrate ответ: $resp")
+            try {
+                _migrationStatus.value = "Запрашиваем новые настройки…"
+                val resp = runCatching { ApiClient.migrateAwg(creds.privateKey) }.getOrNull()
+
+                if (resp == null || !resp.optBoolean("success", false)) {
+                    val code = resp?.optString("error_code").orEmpty()
+                    _state.value = _state.value.copy(error = when (code) {
+                        "disabled" ->
+                            "Новый протокол пока не включён на серверах. Попробуйте позже."
+                        "not_found", "bad_key" ->
+                            "Туннель не найден на сервере. Возможно, он уже удалён."
+                        "sync_failed" ->
+                            "Сервер не успел применить изменения. Попробуйте ещё раз через минуту."
+                        else ->
+                            "Не удалось перевести туннель. Попробуйте позже."
+                    })
+                    return@launch
+                }
+                _migrationStatus.value = "Сохраняем конфигурацию…"
+
+                val configText = resp.optString("config_text")
+                if (configText.isBlank()) {
+                    _state.value = _state.value.copy(error = "Сервер вернул пустой конфиг")
+                    return@launch
+                }
+
+                // state на сервере может называться already_migrated — читаем оба
+                val state = resp.optString("state")
+                    .ifBlank { resp.optString("already_migrated") }
+                android.util.Log.d("ptunnel", "migrate: state=$state port=${resp.optInt("port")}")
+
+                // id не меняется: это тот же пир с тем же адресом
+                val newCreds = ConfigParsers.parseAwg(configText)
+                val blob = ConfigParsers.serialize(newCreds)
+                val id = resp.optString("ip").ifBlank {
+                    newCreds.address.substringBefore("/")
+                }
+
+                preMigrationBlob = prefs.credentials()
+                prefs.saveCredentials(blob, "stainless")
+                store.save(LocalTunnel(
+                    id = id,
+                    tariff = "stainless",
+                    blob = blob,
+                    createdAt = System.currentTimeMillis()
+                ))
+                prefs.markAwgUpgradeAsked()
+                pendingCredentials = newCreds
+                _migrationStatus.value = "Переключаем туннель на сервере…"
+
+                // commit ускоряет переключение, но вызывать его надо ПОКА
+                // работает старый туннель: через новый данные ещё не идут.
+                // Ответа не ждём — старый отключится раньше
+                val pub = resp.optString("public_key")
+                if (pub.isNotBlank() && state != "already") {
+                    withTimeoutOrNull(4000) { ApiClient.commitAwg(pub) }
+                }
+
+                migrationJustDone = true
+                _state.value = _state.value.copy(error = null)
+                _migrationStatus.value = "Подключаемся по новому протоколу. " +
+                        "Это может занять до минуты."
+                reconnectLast()
+            } finally {
+                _awgUpgradeRunning.value = false
+            }
+        }
+    }
+
+    /** Возврат на конфиг v1, если новый не заработал. Старый жив, пока не было переключения. */
+    private suspend fun rollbackMigration() {
+        val old = preMigrationBlob ?: return
+        preMigrationBlob = null
+        prefs.saveCredentials(old, "stainless")
+        pendingCredentials = ConfigParsers.deserialize(old)
+        android.util.Log.d("ptunnel", "откат на старый конфиг")
+    }
+
     /** Переход на ввод номера — если Telegram недоступен. */
     fun switchToPhone() {
         _needPhone.value = true
         _needLogin.value = false
     }
+
+    /** Есть ли что переводить — для пункта меню. */
+    fun canUpgradeAwg(): Boolean = isLegacyAwg(pendingCredentials)
 
     private fun hasNetwork(): Boolean {
         val cm = getApplication<Application>()
@@ -899,10 +1039,29 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Activity сообщает результат диалога VpnService.prepare. */
     /** Activity сообщает результат диалога VpnService.prepare. */
     /** Activity сообщает результат диалога VpnService.prepare. */
+
+    private val _updateProgress = MutableStateFlow(-1)
+    val updateProgress: StateFlow<Int> = _updateProgress.asStateFlow()
+
+    fun downloadUpdate() {
+        val info = _updateAvailable.value ?: return
+        viewModelScope.launch {
+            _updateProgress.value = 0
+            val file = ApkUpdater.download(getApplication(), info.apkUrl) { p ->
+                _updateProgress.value = p
+            }
+            _updateProgress.value = -1
+            if (file != null) {
+                _events.send(Event.InstallApk(file.absolutePath))
+            } else {
+                _state.value = _state.value.copy(error = "Не удалось скачать обновление")
+            }
+        }
+    }
     fun onVpnPermission(granted: Boolean) {
         if (!granted) {
             mark(Stage.ASKING_PERMISSION, StageLine.Status.FAILED)
-            _state.value = _state.value.copy(error = "нет разрешения на VPN")
+            _state.value = _state.value.copy(error = "Нет разрешения на VPN")
             return
         }
         mark(Stage.ASKING_PERMISSION, StageLine.Status.OK)
@@ -941,7 +1100,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 if (!awgUp) {
                     mark(Stage.ROUTING_TRAFFIC, StageLine.Status.FAILED)
-                    _state.value = _state.value.copy(error = "туннель не поднялся")
+                    _state.value = _state.value.copy(error = "Туннель не поднялся")
                     return@launch
                 }
             }
@@ -953,11 +1112,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
 
             val exitIps = runCatching { ApiClient.exitIps() }.getOrDefault(emptySet())
-            val probe = TunnelProbe.run(exitIps)
+            // после миграции данные пойдут только когда сервер переключит пир
+            val patient = migrationJustDone
+            migrationJustDone = false
+            val probe = TunnelProbe.run(exitIps, patient = patient)
 
             when (probe) {
                 is TunnelProbe.Result.Ok -> {
+                    if (patient) {
+                        _migrationStatus.value = null
+                        _state.value = _state.value.copy(
+                            info = "Туннель переведён на новый протокол"
+                        )
+                    }
                     mark(Stage.VERIFYING, StageLine.Status.OK)
+                    preMigrationBlob = null
                     _state.value = _state.value.copy(connected = true)
                     _activeTunnelId.value = idOf(creds)
                     _importedPendingCheck.value = null
@@ -965,12 +1134,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         _state.value = _state.value.copy(showTelegramPrompt = true)
                     }
                     maybeSuggestBypass()
+                    maybeOfferAwgUpgrade(creds)
                 }
 
                 is TunnelProbe.Result.ServerUnreachable,
                 is TunnelProbe.Result.Blocked -> {
                     mark(Stage.VERIFYING, StageLine.Status.FAILED)
                     _activeTunnelId.value = null
+
+                    // миграция не удалась — старый конфиг ещё жив, возвращаемся на него
+                    if (patient && preMigrationBlob != null) {
+                        rollbackMigration()
+                        _state.value = _state.value.copy(
+                            error = "Не удалось перейти на новый протокол. " +
+                                    "Вернули прежние настройки, попробуйте позже."
+                        )
+                        stopEverything()
+                        return@launch
+                    }
 
                     val id = when (creds) {
                         is Credentials.Awg -> creds.address.substringBefore("/")
@@ -982,20 +1163,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     if (gone) {
                         dropLocalTunnel(id!!)
                         _state.value = _state.value.copy(
-                            error = "Этот туннель больше не существует — закончилось " +
-                                    "оплаченное время. Создайте новый на экране тарифов."
+                            error = "Этот туннель больше не существует — вероятно, " +
+                                    "закончилась оплата. Создайте новый на экране тарифов."
                         )
                     } else if (probe is TunnelProbe.Result.ServerUnreachable) {
                         _state.value = _state.value.copy(
                             error = "Нет связи с сервером. Проверьте интернет или " +
-                                    "попробуйте создать новый туннель."
+                                    "попробуйте другой туннель."
                         )
                     } else {
                         _state.value = _state.value.copy(
                             error = "Туннель поднялся, но трафик идёт мимо него. " +
                                     (if (creds is Credentials.Awg)
                                         "Попробуйте тариф ARMOR — он устойчивее к блокировкам."
-                                    else "Попробуйте пересоздать туннель.")
+                                    else "Попробуйте переподключиться.")
                         )
                     }
                     stopEverything()
@@ -1004,7 +1185,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 is TunnelProbe.Result.Failed -> {
                     mark(Stage.VERIFYING, StageLine.Status.FAILED)
                     _activeTunnelId.value = null
-                    _state.value = _state.value.copy(error = probe.message)
+
+                    if (patient && preMigrationBlob != null) {
+                        rollbackMigration()
+                        _state.value = _state.value.copy(
+                            error = "Не удалось перейти на новый протокол. " +
+                                    "Вернули прежние настройки, попробуйте позже."
+                        )
+                        stopEverything()
+                        return@launch
+                    }
+
                     val justImported = _importedPendingCheck.value
                     if (justImported != null) {
                         _importedPendingCheck.value = null
@@ -1013,8 +1204,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                                     "удалён. Попробуйте другую ссылку из бота или " +
                                     "выберите другой туннель в меню."
                         )
-                        stopEverything()
-                        return@launch
+                    } else {
+                        _state.value = _state.value.copy(error = probe.message)
                     }
                     stopEverything()
                 }
@@ -1278,4 +1469,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun clearError() {
         _state.value = _state.value.copy(error = null)
     }
+
+    private val _updateAvailable = MutableStateFlow<ApiClient.UpdateInfo?>(null)
+    val updateAvailable: StateFlow<ApiClient.UpdateInfo?> = _updateAvailable.asStateFlow()
+
+    private fun checkUpdate() {
+        val info = ApiClient.updateInfo ?: return
+        val current = runCatching {
+            val app = getApplication<Application>()
+            app.packageManager.getPackageInfo(app.packageName, 0).longVersionCode.toInt()
+        }.getOrDefault(0)
+        if (info.versionCode > current) _updateAvailable.value = info
+    }
+
+    fun dismissUpdate() { _updateAvailable.value = null }
 }

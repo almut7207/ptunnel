@@ -48,6 +48,16 @@ object ApiClient {
 
     private val JSON = "application/json; charset=utf-8".toMediaType()
 
+    data class UpdateInfo(
+        val versionName: String,
+        val versionCode: Int,
+        val apkUrl: String,
+        val changelog: String
+    )
+
+    var updateInfo: UpdateInfo? = null
+        private set
+
     private val http: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(8, TimeUnit.SECONDS)
@@ -127,6 +137,28 @@ object ApiClient {
         return if (tgId.isBlank() || username.isBlank()) null else tgId to username
     }
 
+    /**
+     * Переводит stainless-туннель на протокол 3.1.
+     * Сервер возвращает готовый конфиг — приватный ключ клиента не меняется.
+     */
+    suspend fun migrateAwg(privateKey: String): JSONObject {
+        val body = JSONObject().put("private_key", privateKey)
+        return post("/awg/migrate", body)
+    }
+
+    /**
+     * Переносит пир на новый интерфейс. Вызывать ТОЛЬКО пока работает старый
+     * туннель: сразу после commit он отключится, и ответ может не дойти.
+     * Запрос идемпотентный, ждать ответа не нужно.
+     */
+    suspend fun commitAwg(publicKey: String) {
+        runCatching {
+            post("/awg/migrate", JSONObject()
+                .put("step", "commit")
+                .put("public_key", publicKey))
+        }
+    }
+
     /** Обновление списка точек входа. Ошибку глотаем — не критично. */
     suspend fun refreshEndpoints() {
         if (useMock) return
@@ -135,6 +167,15 @@ object ApiClient {
             val arr = json.optJSONArray("endpoints") ?: return
             val list = (0 until arr.length()).map { arr.getString(it) }
             if (list.isNotEmpty()) endpoints = list
+            val code = json.optInt("latest_code", 0)
+            if (code > 0) {
+                updateInfo = UpdateInfo(
+                    versionName = json.optString("latest_version"),
+                    versionCode = code,
+                    apkUrl = json.optString("apk_url"),
+                    changelog = json.optString("changelog")
+                )
+            }
         }
     }
 
